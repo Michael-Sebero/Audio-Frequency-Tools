@@ -2,9 +2,9 @@
 ```
 pip install numpy librosa pyaudio sounddevice
 
-git clone https://github.com/michaelsebero/Audio-Frequency-Tools
+git clone https://github.com/michaelsebero/Audio-Tools
 
-sh /home/$USER/Audio-Frequency-Tools/audio-frequency-tools
+sh /home/$USER/Audio-Frequency-Tools/audio-tools
 ```
 
 ## Audio Frequency Detector

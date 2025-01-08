@@ -1,13 +1,13 @@
 #!/bin/bash
 
-commands=("Frequency Detector" "Frequency Generator" "Quit")
+commands=("Frequency Detector" "Frequency Generator" "Sample Rate Detector" "Quit")
 
 selected=0
 
 # Function to display the list and highlight the selected item
 display_list() {
     clear
-    echo -e "\033[1m  Audio Frequency Tools\033[0m\n  ---------------------"
+    echo -e "\033[1m  Audio Tools\033[0m\n  ---------------------"
     for i in "${!commands[@]}"; do
         if [ $i -eq $selected ]; then
             if [ "${commands[$i]}" == "Quit" ]; then
@@ -26,17 +26,17 @@ execute_command() {
     case ${commands[$selected]} in
         "Frequency Detector") 
             # Add your command logic here
-            python3 Audio-Frequency-Tools/tools/frequency-detector.py
+            python3 Audio-Tools/tools/frequency-detector.py
             read -p "Press Enter to return to the menu..."
             ;;
         "Frequency Generator") 
             # Add your command logic here
-            python3 Audio-Frequency-Tools/tools/frequency-generator.py
+            python3 Audio-Tools/tools/frequency-generator.py
             read -p "Press Enter to return to the menu..."
             ;;
         "Sample Rate Detector") 
             # Add your command logic here
-            python3 Audio-Frequency-Tools/tools/sample-rate-detector.py
+            python3 Audio-Tools/tools/sample-rate-detector.py
             read -p "Press Enter to return to the menu..."
             ;;            
         "Quit") 
