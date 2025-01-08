@@ -34,6 +34,11 @@ execute_command() {
             python3 Audio-Frequency-Tools/tools/frequency-generator.py
             read -p "Press Enter to return to the menu..."
             ;;
+        "Sample Rate Detector") 
+            # Add your command logic here
+            python3 Audio-Frequency-Tools/tools/sample-rate-detector.py
+            read -p "Press Enter to return to the menu..."
+            ;;            
         "Quit") 
             echo -e "\n\033[1mExiting script\033[0m"
             exit 0
