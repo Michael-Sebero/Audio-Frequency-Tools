@@ -12,4 +12,4 @@ This script detects dominant frequencies in audio.
 
 ## Audio Frequency Generator
 This script generates the user's desired frequency or multiple.
-
+> Adding (b) to the desired frequency plays a binaural frequency. 
