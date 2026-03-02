@@ -1,0 +1,86 @@
+============================================
+               *** README ***               
+============================================
+
+Brainwaves in the human brain occur in distinct frequencies, measured in cycles per second (Hz), and are influenced by the principle of resonance. This principle states that a system—whether mechanical, electrical, or biological—will experience a large-amplitude vibration when exposed to a periodic stimulus that matches or closely aligns with its natural frequency. In the context of brainwaves, this means that external stimuli, such as sound, light, or touch, can induce the brain to synchronize with those frequencies.
+
+For example, when energy waves—whether visual, auditory, or tactile—reach the brain, they can cause the brain's electrical activity to resonate, aligning with the frequency of the incoming stimulus. A well-known phenomenon of this is the occurrence of seizures in some individuals when exposed to a flickering light at around 10 Hz, a frequency that resonates with certain brainwave patterns.
+
+In a series of papers starting in 2016 demonstrated that light flickering and/or sound clicking at 40 Hz (a technology called GENUS for Gamma Entrainment Using Sensory stimuli), reduces levels of amyloid-beta and tau proteins, prevents neuron death and preserves synapses and even sustains learning and memory in a variety of Alzheimer’s disease mouse models. Most recently in pilot clinical studies the team showed that 40 Hz light and sound stimulation was safe, successfully increased brain activity and connectivity and appeared to produce significant clinical benefits in a small cohort of human volunteers with early-stage Alzheimer’s disease. Other groups have replicated and corroborated health benefits of 40 Hz sensory stimulation and an MIT spin-off company, Cognito Therapeutics, has launched stage III clinical trials of light and sound stimulation as an Alzheimer’s treatment.
+
+In auditory resonance, sound waves within the human hearing range can also influence brainwave activity, as the brain responds to vibrations within this range. The audio spectrum encompasses the frequencies of sound that the human ear can consciously detect, and these frequencies can directly affect brainwave patterns, just as light frequencies can influence visual processing and cognitive states.
+
+The audio spectrum, the range of sound frequencies detectable by the human ear, spans from approximately 15 Hz (bass) to 20,000 Hz (treble). Below this range lies the infrasonic spectrum (10–15 Hz), which is too low to be consciously heard but can still induce resonance in the brain. Below the infrasonic range are Extremely Low Frequency (ELF) waves, which are powerful enough to travel through the Earth and are used in submarine communication.
+
+Brainwave resonance (BWR) plays a significant role in human interaction, both passively and actively. In passive contexts, an environment may be saturated with EMS waves that correspond to specific brainwave frequencies, influencing the mood and cognitive state of individuals within it without their conscious awareness. For example, a relaxed, cooperative conversation is more likely in an environment that supports an alpha brainwave resonance (8-12 Hz), while attempting to solve complex or creative tasks in a delta environment (1-4 Hz) would likely be exhausting and unproductive.
+
+============================================
+      BRAINWAVE FREQUENCIES & EFFECTS      
+============================================
+
+[ 0.5 - 3 Hz ] → DEEP SLEEP & HEALING
+-------------------------------------
+• Effect: Induces deep sleep, promotes immune function, and accelerates physical healing.
+• Use: Sleep therapy, anxiety relief, and recovery.
+• Best Format: Binaural.
+
+[ 4 - 7 Hz ] → EMOTIONAL PROCESSING & STRESS REGULATION
+-------------------------------------------------------
+• Effect: Heightens emotions, imagination, and frustration; linked to anger suppression.
+• Use: Meditation, emotional healing, dream states, subconscious access.
+• Best Format: Binaural.
+
+[ 7.83 Hz ] → MENTAL STABILIZATION & GROUNDING
+----------------------------------------------
+• Effect: Promotes mental balance.
+• Use: Stress relief, grounding, reducing brain fog.
+• Best Format: Mono or Binaural.
+
+[ 8 - 12 Hz ] → RELAXATION, MEDITATION & PATTERN RECOGNITION
+------------------------------------------------------------
+• Effect: Enhances calmness, creativity, and pattern recognition; reduces stress.
+• Use: Meditation, mindfulness, problem-solving.
+• Best Format: Binaural.
+
+[ 13 - 22 Hz ] → FOCUS, CONCENTRATION & LOGICAL THINKING
+--------------------------------------------------------
+• Effect: Enhances attention, logical thinking, and decision-making.
+• Use: Studying, working, cognitive performance.
+• Best Format: Binaural.
+
+[ 15 Hz ] → HEADACHE & NAUSEA
+-----------------------------
+• Effect: Can induce mild discomfort, headaches, or overstimulation.
+• Use: Not recommended for relaxation; can be used for alertness.
+• Best Format: Mono.
+
+[ 17 Hz ] → ANXIETY & VISUAL DISTURBANCES
+-----------------------------------------
+• Effect: Linked to discomfort, anxiety, and potential visual flicker effects.
+• Use: Not recommended for general use; relevant for controlled research.
+• Best Format: Mono.
+
+[ 40 Hz ] → AMYLOID REDUCTION & COGNITIVE BOOST
+-----------------------------------------------
+• Effect: Shown to reduce amyloid plaque buildup (potential Alzheimer’s prevention).
+• Use: Cognitive enhancement, mental clarity, neuroprotection.
+• Best Format: Mono or Binaural.
+
+[ 40 - 70 Hz ] → FRONTAL LOBE STIMULATION & HIGH-LEVEL THINKING
+---------------------------------------------------------------
+• Effect: Enhances problem-solving, neuroplasticity, memory, and executive function.
+• Use: Learning, mental performance, dementia therapy.
+• Best Format: Mono or Binaural (both effective, binaural preferred for deeper entrainment).
+
+============================================
+            ADDITIONAL NOTES               
+============================================
+
+• Delta & Theta Waves (0.5 - 7 Hz) → Best for relaxation, sleep, and subconscious processing.
+• Alpha Waves (8 - 12 Hz) → Ideal for calming the mind and improving pattern recognition.
+• Beta Waves (13 - 22 Hz) → Enhance logical thinking but can overstimulate some individuals.
+• Gamma Waves (40 - 70 Hz) → Essential for high-level cognition and frontal lobe activity.
+
+> Binural is for headphones and Mono is for speakers.
+
+> This program defaults to Mono if the "b" flag isn't added.
