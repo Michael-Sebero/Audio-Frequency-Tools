@@ -46,13 +46,13 @@ SUITE_GENERAL = [
         duty    = 0.5, band="delta",
         desc    = """\
     Dominant during NREM stage 3 deep sleep.  Associated with physical
-    restoration, immune regulation, and growth hormone release.
+    restoration, immune regulation and growth hormone release.
     Waking delta does not replicate sleep benefits.  Use for sleep onset.
     Headphones required.  Research minimum: 20 minutes.""",
         detail  = """\
     Delta oscillations (0.5-3 Hz) are the slowest recorded brainwave pattern
     and occur naturally only during deep, dreamless sleep.  They are associated
-    with physical restoration, immune regulation, and hormonal release (including
+    with physical restoration, immune regulation and hormonal release (including
     growth hormone).  Delta is not a conscious state; its presence during
     wakefulness typically indicates drowsiness, pathology, or neurological
     abnormality rather than a beneficial condition.
@@ -70,14 +70,14 @@ SUITE_GENERAL = [
         mode    = "binaural", beat_hz=6.0, carrier_hz=400.0,
         duty    = 0.5, band="theta",
         desc    = """\
-    Prominent during light sleep, hypnagogic states, and deep meditation.
-    Associated with memory consolidation, emotional processing, and creative
+    Prominent during light sleep, hypnagogic states and deep meditation.
+    Associated with memory consolidation, emotional processing and creative
     ideation.  EEG-confirmed at parietal and temporal sites after 6 minutes.
     Headphones required.  Research minimum: 6 minutes.""",
         detail  = """\
     Theta oscillations (4-7 Hz) are prominent during light sleep, the hypnagogic
-    (pre-sleep) state, and deep meditative states.  They are associated with
-    memory consolidation, emotional processing, and creative ideation.  Elevated
+    (pre-sleep) state and deep meditative states.  They are associated with
+    memory consolidation, emotional processing and creative ideation.  Elevated
     waking theta in the frontal midline has been correlated with focused internal
     attention in some research contexts.  However, prolonged waking theta can
     also correlate with inattentiveness and drowsiness.
@@ -131,14 +131,14 @@ SUITE_GENERAL = [
         duty    = 0.5, band="alpha",
         desc    = """\
     Dominant during relaxed, eyes-closed wakefulness and light meditation.
-    EEG-confirmed increase in frontal, central, parietal, and occipital
+    EEG-confirmed increase in frontal, central, parietal and occipital
     alpha power after 5 minutes.  Kim et al. (2023).
     Headphones required.  Research minimum: 5 minutes.""",
         detail  = """\
     Alpha oscillations (8-12 Hz) are the dominant rhythm during relaxed,
-    wakeful states such as quiet reflection, closed-eye rest, and light
+    wakeful states such as quiet reflection, closed-eye rest and light
     meditation.  They are associated with reduced cortical arousal, lower
-    anxiety, and a receptive cognitive state.
+    anxiety and a receptive cognitive state.
 
     Posterior alpha typically increases when eyes are closed, reflecting
     reduced visual processing load -- a passive reflex, not an actively
@@ -147,7 +147,7 @@ SUITE_GENERAL = [
     cortical function, not a deficit.
 
     EEG confirmation: increased absolute alpha power across frontal, central,
-    parietal, and occipital electrode areas after 5 minutes of stimulation
+    parietal and occipital electrode areas after 5 minutes of stimulation
     at 400 Hz carrier.  Source: Kim et al. (2023), Technology and Health Care.
 
     Alpha increase is a correlate of reduced arousal rather than a direct
@@ -164,7 +164,7 @@ SUITE_GENERAL = [
         duty    = 0.5, band="other",
         desc    = """\
     Not recommended for relaxation or general use.  Stimulation near 15 Hz
-    has been associated with discomfort, eye strain, and headaches in
+    has been associated with discomfort, eye strain and headaches in
     sensitive individuals, partly due to proximity to the alpha-beta boundary.
     Auditory stimulation carries a lower but non-zero risk of overstimulation.
     Mono delivery.  Restrict to controlled contexts only.""",
@@ -172,7 +172,7 @@ SUITE_GENERAL = [
     Source: BWR Manual.
 
     Stimulation near 15 Hz -- particularly via visual flicker -- has been
-    associated with discomfort, eye strain, and headaches in sensitive
+    associated with discomfort, eye strain and headaches in sensitive
     individuals.  This is partly explained by proximity to the alpha-beta
     boundary and susceptibility in photosensitive subjects.
 
@@ -212,7 +212,7 @@ SUITE_GENERAL = [
 
     High beta (20-30 Hz): Associated with heightened arousal and cortical
     activation.  In excess or in stress-prone individuals, high beta correlates
-    with anxiety, rumination, and overstimulation.  High-end beta stimulation
+    with anxiety, rumination and overstimulation.  High-end beta stimulation
     is not recommended for individuals prone to anxiety or stress sensitivity.
 
     Mechanistically, beta activity reflects thalamocortical oscillatory loops
@@ -237,7 +237,7 @@ SUITE_GENERAL = [
         desc    = """\
     High beta (20-30 Hz) associated with heightened cortical arousal.
     In excess or in stress-prone individuals, correlates with anxiety,
-    rumination, and overstimulation.  Not recommended for individuals
+    rumination and overstimulation.  Not recommended for individuals
     prone to anxiety.  Zero EEG studies confirm entrainment at this band.
     Headphones required.  No established research minimum.""",
         detail  = """\
@@ -245,7 +245,7 @@ SUITE_GENERAL = [
 
     High beta oscillations (20-30 Hz) are associated with heightened cortical
     arousal and activation.  In excess or in stress-prone individuals, high beta
-    correlates with anxiety, rumination, and overstimulation.
+    correlates with anxiety, rumination and overstimulation.
 
     The BWR Manual explicitly states: "High-end beta stimulation is not
     recommended for individuals prone to anxiety or stress sensitivity."
@@ -275,7 +275,7 @@ SUITE_GENERAL = [
 
     Gamma oscillations (40-70 Hz) are correlated with high-level information
     processing, cross-regional neural coordination, perceptual binding, working
-    memory maintenance, and executive function.  Gamma deficits are documented
+    memory maintenance and executive function.  Gamma deficits are documented
     in Alzheimer's disease and schizophrenia.
 
     FORMAT NOTE: The BWR Manual recommends Mono or Binaural for 40 Hz gamma
@@ -289,7 +289,7 @@ SUITE_GENERAL = [
     gamma delivery.  To use mono or binaural delivery as the Manual specifies,
     select Manual Configuration.
 
-    EEG confirmation: gamma power increase in temporal, frontal, and central
+    EEG confirmation: gamma power increase in temporal, frontal and central
     regions after 15 minutes.  Source: Jirakittayakorn & Wongsawat (2017b).
 
     40 Hz is also the foundational frequency in MIT's GENUS Alzheimer's
@@ -335,20 +335,20 @@ SUITE_MINDWAR = [
         duty    = 0.5, band="theta",
         desc    = """\
     MindWar characterisation: "4-7 Hz, characteristic of high emotion,
-    violence, and frustration."  This diverges from mainstream research,
+    violence and frustration."  This diverges from mainstream research,
     which associates theta with relaxation and meditative states.
     Headphones required.  Research minimum: 6 minutes.""",
         detail  = """\
     Source: Aquino, MindWar 2nd ed. (2016), Chapter 3, PSYCON #2.
 
     MindWar characterisation: "4-7 Hz = theta waves, characteristic of high
-    emotion, violence, and frustration."  In Aquino's framework, theta BWR
+    emotion, violence and frustration."  In Aquino's framework, theta BWR
     is used to promote emotional volatility and impair rational decision-making
     in a target population.
 
     DIVERGES FROM CONSENSUS: This framing conflicts with mainstream peer-reviewed
     EEG literature, which primarily associates theta with relaxation, memory
-    consolidation, and meditative states.  Aquino's characterisation appears to
+    consolidation and meditative states.  Aquino's characterisation appears to
     reflect an older or selectively sourced interpretation of the theta band.
 
     Delivery: binaural beat.  Headphones required.  Research minimum: 6 minutes.""",
@@ -359,14 +359,14 @@ SUITE_MINDWAR = [
         duty    = 0.5, band="alpha",
         desc    = """\
     MindWar characterisation: "8-12 Hz, characteristic of meditation,
-    relaxation, and searching for patterns."  Aquino describes alpha BWR
+    relaxation and searching for patterns."  Aquino describes alpha BWR
     as enabling "relaxed, pleasant, cooperative discussion."  Consistent
     with mainstream EEG literature.  Headphones required.  Min: 5 minutes.""",
         detail  = """\
     Source: Aquino, MindWar 2nd ed. (2016), Chapter 3, PSYCON #2.
 
     MindWar characterisation: "8-12 Hz = alpha waves, characteristic of
-    meditation, relaxation, and searching for patterns."  Aquino describes
+    meditation, relaxation and searching for patterns."  Aquino describes
     alpha BWR as enabling "relaxed, pleasant, cooperative discussion" -- the
     most overtly positive of his four primary brainwave targets.
 
@@ -397,7 +397,7 @@ SUITE_MINDWAR = [
     BWR Manual.
 
     MindWar characterisation: "13-22 Hz = beta waves, characteristic of frontal
-    brain activity, deliberate effort, and logical thought."  Aquino's upper beta
+    brain activity, deliberate effort and logical thought."  Aquino's upper beta
     ceiling of 22 Hz is narrower than the modern standard of 13-30 Hz.  High beta
     (22-30 Hz) is associated with heightened arousal and anxiety and is absent
     from his framework.
@@ -482,7 +482,7 @@ SUITE_MINDWAR = [
         desc    = """\
     Center of the 45-70 Hz range used by the U.S. Navy's Project Sanguine
     ELF submarine transmitter.  Aquino cites Becker: these frequencies
-    "alter blood chemistry, blood pressure, and brain wave patterns."
+    "alter blood chemistry, blood pressure and brain wave patterns."
     Part of Aquino's 30-100 Hz biological hazard range.
     Speakers or headphones.  No established research minimum.""",
         detail  = """\
@@ -497,12 +497,12 @@ SUITE_MINDWAR = [
     Aquino cites Dr. Robert Becker's concern that these frequencies are "close
     enough to the Earth's micropulsations that living things are very sensitive
     to them," and that similar fields had been shown to alter blood chemistry,
-    blood pressure, and brain wave patterns in animals.
+    blood pressure and brain wave patterns in animals.
 
     This range forms part of Aquino's 30-100 Hz ELF biological hazard band.
     MindWar states that ELF radiation in this range "appears to interfere with
     the body's normal biological cycles," with cited effects including chronic
-    mild stress, impaired immune response, altered blood chemistry, and
+    mild stress, impaired immune response, altered blood chemistry and
     disruption of biocycles.
 
     This preset is included for completeness of the MindWar frequency map.
@@ -532,7 +532,7 @@ SUITE_ALZHEIMERS = [
     The MIT Picower Institute (Li-Huei Tsai lab) demonstrated from 2016 onward
     that 40 Hz GENUS (Gamma Entrainment Using Sensory Stimuli) light flickering
     and/or sound clicking reduced amyloid-beta plaques and tau tangles in
-    transgenic Alzheimer's disease mouse models, prevented neuron death, and
+    transgenic Alzheimer's disease mouse models, prevented neuron death and
     improved learning and memory.
 
     Sound alone (without light) also reduced amyloid and tau and improved
@@ -545,7 +545,7 @@ SUITE_ALZHEIMERS = [
       - Gene expression changes in neurons and glia
 
     In subsequent human pilot studies, 40 Hz stimulation was found safe,
-    increased gamma-band activity and connectivity, and showed apparent benefit
+    increased gamma-band activity and connectivity and showed apparent benefit
     in early-stage Alzheimer's patients.  These findings have been partially
     replicated by independent research groups.  MIT spin-off Cognito
     Therapeutics has advanced this into Phase III clinical trials.
@@ -569,7 +569,7 @@ SUITE_ALZHEIMERS = [
     40 Hz binaural beat at research-optimal 400 Hz carrier.  40 Hz exceeds
     the binaural beat perception limit but an auditory steady-state response
     (ASSR) is still measurable in EEG.  Gamma power increase confirmed in
-    temporal, frontal, and central regions after 15 minutes.
+    temporal, frontal and central regions after 15 minutes.
     Headphones required.  Research minimum: 15 minutes.""",
         detail  = """\
     Source: Jirakittayakorn & Wongsawat (2017b); Schwarz & Taylor (2005).
@@ -582,7 +582,7 @@ SUITE_ALZHEIMERS = [
     cleanly into a perceived beat.  However, an auditory steady-state response
     (ASSR) is still measurable in EEG at the difference frequency, confirming
     neural processing at 40 Hz.  Gamma power increase has been confirmed in
-    temporal, frontal, and central regions after 15 minutes.
+    temporal, frontal and central regions after 15 minutes.
 
     Isochronic mode provides more reliable 40 Hz delivery.  This binaural
     variant is an alternative for those who prefer the binaural mechanism or
@@ -655,7 +655,7 @@ SUITE_ALZHEIMERS = [
         duty    = 0.5, band="gamma",
         desc    = """\
     Upper gamma range (40-70 Hz), correlated with perceptual binding,
-    distributed cortical coordination, and intense attentional states.
+    distributed cortical coordination and intense attentional states.
     Gamma deficits are documented in Alzheimer's and schizophrenia.
     Auditory gamma entrainment research is less established than 40 Hz.
     Speakers or headphones.  Research minimum: 15 minutes.""",
@@ -664,7 +664,7 @@ SUITE_ALZHEIMERS = [
 
     60 Hz sits within the 40-70 Hz gamma range correlated with high-level
     information processing, perceptual binding, cross-regional neural
-    coordination, and states of intense attentional focus and complex
+    coordination and states of intense attentional focus and complex
     cognitive engagement.  Gamma deficits have been documented in Alzheimer's
     disease and schizophrenia.
 
@@ -950,11 +950,11 @@ def choose_suite():
     print("  3  Alzheimer's / 40 Hz Suite")
     print("       MIT Picower GENUS protocols targeting 40 Hz gamma for")
     print("       amyloid reduction and cognitive preservation.  Includes")
-    print("       the full 1-hour protocol, daily maintenance, and a")
+    print("       the full 1-hour protocol, daily maintenance and a")
     print("       parametric ultrasonic variant.")
     print()
     print("  4  Manual Configuration")
-    print("       Specify mode, frequency, carrier, and duration directly.")
+    print("       Specify mode, frequency, carrier and duration directly.")
     print()
     print("  5  Embed Mode")
     print("       AM-modulate an existing WAV file at a target beat frequency.")
