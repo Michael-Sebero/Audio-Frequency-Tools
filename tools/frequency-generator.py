@@ -193,7 +193,7 @@ SUITE_GENERAL = [
     ),
     dict(
         label    = "Alpha  10 Hz  --  Relaxed wakefulness / stress reduction",
-        mode     = "binaural", beat_hz=10.0, carrier_hz=400.0,
+        mode     = "binaural", beat_hz=10.0, carrier_hz=250.0,
         duty     = 0.5, band="alpha", evidence="Moderate",
         timing   = "before_and_during",
         desc     = """\
@@ -223,8 +223,14 @@ SUITE_GENERAL = [
     Alpha increase is a correlate of reduced arousal rather than a direct
     cause of calm.
 
-    Delivery: binaural beat at 400 Hz carrier.  Headphones required.
-    Research minimum: 10 minutes.  Evidence: Moderate.""",
+    CARRIER NOTE: This preset uses a 250 Hz carrier to replicate the exact
+    protocol of Kim et al. (2023), which is the primary EEG-confirmed study
+    cited here.  The research-general optimal carrier of 400 Hz (Goodin et al.)
+    was not used in that study; deviating to 400 Hz would not replicate the
+    confirmed EEG outcome.
+
+    Delivery: binaural beat at 250 Hz carrier (Kim et al. 2023 protocol).
+    Headphones required.  Research minimum: 10 minutes.  Evidence: Moderate.""",
     ),
     dict(
         label    = "15 Hz  --  Discomfort threshold  (caution)",
@@ -515,6 +521,9 @@ SUITE_ATTENTION = [
     Colzato et al. (2017): 3 min gamma BB before+during global-local task
     produced more attentional focus (reduced global precedence effect).
     Garcia-Argibay meta: attention g=0.694 for Colzato; g=0.666 for Hommel 2016.
+    PROTOCOL DEVIATION: original studies used binaural beats; this preset uses
+    isochronic because 40 Hz exceeds the ~30 Hz binaural perception limit.
+    Binaural and isochronic activate different neural pathways (Chaieb 2015).
     Speakers or headphones.  Recommended: 3-10 min induction.
     Research minimum: 15 min.  Evidence: Moderate.""",
         detail   = """\
@@ -539,10 +548,21 @@ SUITE_ATTENTION = [
     These findings appear contradictory but may reflect different task demands.
     Both show gamma BB modulates attentional style.
 
-    FORMAT: 40 Hz exceeds the ~30 Hz binaural perception limit; isochronic AM
-    is used for reliability.  Original studies used binaural + white noise.
+    IMPORTANT — PROTOCOL DEVIATION: Both Colzato 2017 and Hommel 2016 used
+    binaural beats (340 Hz carrier + white noise masking).  This preset
+    substitutes isochronic AM because 40 Hz exceeds the ~30 Hz binaural
+    perception limit (Perrott & Nelson 1969; Ingendoh et al. 2023).  Binaural
+    beats are processed centrally in the superior olivary nucleus, whereas
+    isochronic tones are demodulated peripherally in the cochlea (Chaieb 2015).
+    The attentional effects observed in the original studies were demonstrated
+    with binaural delivery specifically; it is unknown whether isochronic
+    delivery at 40 Hz produces equivalent cognitive outcomes.  For the closest
+    possible replication use the "40 Hz Attention BB (440/480 Hz)" binaural
+    preset from the Attention suite, which was validated in Engelbregt et al.
+    (2021) with an auditory ASSR confirmed at 440/480 Hz.
 
-    Delivery: isochronic tone at 200 Hz carrier.  Speakers or headphones.
+    Delivery: isochronic tone at 200 Hz carrier (modified from original binaural
+    protocol).  Speakers or headphones.
     Recommended: 3+ min before, then during cognitive task.
     Research minimum: 15 minutes.  Evidence: Moderate.""",
     ),
@@ -560,8 +580,9 @@ SUITE_MINDWAR = [
     "exhausting and fruitless."  Consistent with standard neuroscience.
     Headphones required.  Research minimum: 20 minutes.  Evidence: Limited.""",
         detail   = """\
-    Source: Aquino, MindWar 2nd ed. (2016), Chapter 3, PSYCON #2: Brainwave
-    Resonance.
+    Source: Valley PE & Aquino MA (1980). From PSYOP to MindWar: The Psychology
+    of Victory. HQ 7th Psychological Operations Group, USAR.  Introduction and
+    annotations: Aquino MA (2003).  Chapter 3, PSYCON #2: Brainwave Resonance.
 
     MindWar characterisation: "1-3 Hz = delta waves, characteristic of deep
     sleep."  Aquino describes the operational use of delta BWR as suppressing
@@ -586,7 +607,9 @@ SUITE_MINDWAR = [
     which associates theta with relaxation and meditative states.
     Headphones required.  Research minimum: 10 minutes.  Evidence: Limited.""",
         detail   = """\
-    Source: Aquino, MindWar 2nd ed. (2016), Chapter 3, PSYCON #2.
+    Source: Valley PE & Aquino MA (1980). From PSYOP to MindWar: The Psychology
+    of Victory. HQ 7th Psychological Operations Group, USAR.  Introduction and
+    annotations: Aquino MA (2003).  Chapter 3, PSYCON #2.
 
     MindWar characterisation: "4-7 Hz = theta waves, characteristic of high
     emotion, violence and frustration."  In Aquino's framework, theta BWR
@@ -613,7 +636,9 @@ SUITE_MINDWAR = [
     with mainstream EEG literature.  Headphones required.  Min: 10 minutes.
     Evidence: Moderate.""",
         detail   = """\
-    Source: Aquino, MindWar 2nd ed. (2016), Chapter 3, PSYCON #2.
+    Source: Valley PE & Aquino MA (1980). From PSYOP to MindWar: The Psychology
+    of Victory. HQ 7th Psychological Operations Group, USAR.  Introduction and
+    annotations: Aquino MA (2003).  Chapter 3, PSYCON #2.
 
     MindWar characterisation: "8-12 Hz = alpha waves, characteristic of
     meditation, relaxation and searching for patterns."  Consistent with
@@ -633,7 +658,9 @@ SUITE_MINDWAR = [
     anxiety risk.  Best format per BWR Manual: Mono.
     No peer-reviewed EEG entrainment support.  Evidence: Inconclusive.""",
         detail   = """\
-    Source: Aquino, MindWar 2nd ed. (2016), Chapter 3, PSYCON #2; BWR Manual.
+    Source: Valley PE & Aquino MA (1980). From PSYOP to MindWar: The Psychology
+    of Victory. HQ 7th Psychological Operations Group, USAR.  Introduction and
+    annotations: Aquino MA (2003).  Chapter 3, PSYCON #2; BWR Manual.
 
     CAUTION: 17 Hz is flagged in the BWR Manual for restlessness, discomfort,
     and anxiety risk in sensitive individuals.
@@ -657,7 +684,9 @@ SUITE_MINDWAR = [
     may be inaudible.  Recommended: 96 kHz sample rate.  Min: 10 minutes.
     Evidence: Limited.""",
         detail   = """\
-    Source: Aquino, MindWar 2nd ed. (2016), Chapter 3, PSYCON #1 and #2.
+    Source: Valley PE & Aquino MA (1980). From PSYOP to MindWar: The Psychology
+    of Victory. HQ 7th Psychological Operations Group, USAR.  Introduction and
+    annotations: Aquino MA (2003).  Chapter 3, PSYCON #1 and #2.
 
     LIMITATION: MindWar's true intended delivery is ELF electromagnetic fields
     transmitted through the environment, penetrating walls and the body's skin
@@ -678,7 +707,9 @@ SUITE_MINDWAR = [
     Requires a subwoofer capable of sub-20 Hz output.  Min: 10 minutes.
     Evidence: Limited.""",
         detail   = """\
-    Source: Aquino, MindWar 2nd ed. (2016), Chapter 3, PSYCON #1 and #2.
+    Source: Valley PE & Aquino MA (1980). From PSYOP to MindWar: The Psychology
+    of Victory. HQ 7th Psychological Operations Group, USAR.  Introduction and
+    annotations: Aquino MA (2003).  Chapter 3, PSYCON #1 and #2.
 
     This preset outputs a real 12.5 Hz pressure wave with no audible carrier
     tone.  At this frequency the wave is not consciously heard but is felt
@@ -705,8 +736,9 @@ SUITE_MINDWAR = [
     Speakers or headphones.  No established research minimum.
     Evidence: Inconclusive.""",
         detail   = """\
-    Source: Aquino, MindWar 2nd ed. (2016), Chapter 3, PSYCON #1; Becker via
-    Aquino.
+    Source: Valley PE & Aquino MA (1980). From PSYOP to MindWar: The Psychology
+    of Victory. HQ 7th Psychological Operations Group, USAR.  Introduction and
+    annotations: Aquino MA (2003).  Chapter 3, PSYCON #1; Becker via Aquino.
 
     LIMITATION: True ELF effects require electromagnetic antenna hardware.
     This preset is an isochronic acoustic output only.
@@ -768,6 +800,8 @@ SUITE_ALZHEIMERS = [
     40 Hz binaural beat using Engelbregt 2021 carrier (440/480 Hz).  40 Hz
     exceeds the binaural perception limit but an ASSR is still measurable in
     EEG.  Also showed attention improvement vs pink noise in Flanker task.
+    IMPORTANT: Engelbregt 2021 found NO consistent 40/45 Hz EEG power increase
+    with these carriers — cognitive benefit occurred without confirmed entrainment.
     Headphones required.  Research minimum: 15 minutes.  Evidence: Moderate.""",
         detail   = """\
     Sources: Jirakittayakorn & Wongsawat (2017b); Schwarz & Taylor (2005);
@@ -781,6 +815,17 @@ SUITE_ALZHEIMERS = [
 
     40 Hz binaural ASSR confirmed by Schwarz & Taylor (2005) and Jirakittayakorn
     & Wongsawat (2017b).
+
+    IMPORTANT — NO EEG ENTRAINMENT CONFIRMED WITH THIS CARRIER PAIR: Engelbregt
+    et al. (2021) explicitly found no consistent increase in absolute 40 or 45 Hz
+    EEG power in frontal or temporal electrodes during 440/480 Hz stimulation.
+    The observed attention improvement (fewer Flanker errors; η²=0.142) likely
+    occurs via a mechanism other than classical brainwave entrainment — the
+    authors suggest norepinephrine/glutamate dynamics (Hommel et al. 2016) as a
+    candidate pathway.  This preset may therefore benefit attention without
+    producing the gamma entrainment relevant to Alzheimer's amyloid clearance
+    mechanisms.  For the entrainment-focused Alzheimer's protocol, prefer the
+    isochronic MIT GENUS or Daily Maintenance presets.
 
     Delivery: binaural beat.  Headphones required.
     Research minimum: 15 minutes.  Evidence: Moderate.""",
@@ -1239,7 +1284,7 @@ def choose_suite():
     print("       Engelbregt 2021  |  Malandrone 2022  |  Garcia-Argibay 2017")
     print("       Colzato 2017  |  Kraus & Porubanová 2015")
     print()
-    print("  3  MindWar Suite  (Aquino 2016)")
+    print("  3  MindWar Suite  (Valley & Aquino 1980 / Aquino 2003)")
     print("       Frequencies from Michael Aquino's MindWar operational BWR")
     print("       framework.  Includes infrasonic and ELF variants.")
     print()
@@ -1485,7 +1530,7 @@ def main():
 
     if   choice == 1: p = choose_preset(SUITE_GENERAL,    "General Brainwave Suite")
     elif choice == 2: p = choose_preset(SUITE_ATTENTION,  "Attention & Cognition Suite")
-    elif choice == 3: p = choose_preset(SUITE_MINDWAR,    "MindWar Suite  (Aquino 2016)")
+    elif choice == 3: p = choose_preset(SUITE_MINDWAR,    "MindWar Suite  (Valley & Aquino 1980 / Aquino 2003)")
     elif choice == 4: p = choose_preset(SUITE_ALZHEIMERS, "Alzheimer's / 40 Hz Suite")
     else:             p = manual_config()
 
