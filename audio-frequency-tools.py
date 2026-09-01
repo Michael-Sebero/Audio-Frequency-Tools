@@ -1,15 +1,19 @@
 """
-Brainwave Frequency Generator
+Audio Frequency Tools
 =====================================
-Requirements
-  pip install numpy sounddevice
-  pip install scipy   (embed mode only)
+Combines a brainwave/entrainment tone generator (binaural, isochronic, mono,
+infrasonic, subliminal, parametric and surround delivery modes, plus a WAV
+embed mode) with a dominant-frequency detector for existing audio files.
+
+Requirements (auto-installed on first run if missing)
+  numpy, sounddevice, scipy, librosa, soundfile
 """
 
 import math
 import os
 import queue
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -18,37 +22,69 @@ import time
 #  AUTO-INSTALL MISSING PACKAGES
 # ---------------------------------------------------------------------------
 
-def _ensure_packages():
-    """Install any missing third-party packages automatically."""
-    import importlib
-    import importlib.util
-    import subprocess
+def _is_installed(module_name: str) -> bool:
+    """Check whether a module is importable without actually importing it into this namespace.
+    Some packages (e.g. sounddevice) raise OSError instead of ImportError when their
+    underlying native/system library is missing, so any import-time failure counts."""
+    try:
+        __import__(module_name)
+        return True
+    except Exception:
+        return False
 
-    required = {
-        "numpy":       "numpy",
-        "sounddevice": "sounddevice",
-    }
 
-    missing = [
-        pip_name
-        for mod_name, pip_name in required.items()
-        if importlib.util.find_spec(mod_name) is None
-    ]
-
-    if missing:
-        print(f"  Installing missing package(s): {', '.join(missing)} ...")
-        subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", "--break-system-packages",
-             "--quiet", *missing]
+def _pip_install(package: str) -> bool:
+    """Install a package with pip3, using --break-system-packages. Returns True on success."""
+    print(f"  Missing dependency '{package}' — installing...")
+    try:
+        subprocess.run(
+            ["pip3", "install", "--break-system-packages", package],
+            check=True,
+            capture_output=True,
+            text=True,
         )
-        print("  Installation complete.\n")
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"  Failed to install '{package}': {e.stderr.strip() if e.stderr else e}")
+        return False
+    except FileNotFoundError:
+        print("  pip3 not found on this system; skipping auto-install")
+        return False
 
-_ensure_packages()
 
-# ---------------------------------------------------------------------------
+_REQUIRED_DEPS = [
+    ("numpy", "numpy"),
+    ("sounddevice", "sounddevice"),
+    ("scipy", "scipy"),
+    ("librosa", "librosa"),
+    ("soundfile", "soundfile"),
+]
 
-import numpy as np
-import sounddevice as sd
+_deps_ok = True
+for _module_name, _package in _REQUIRED_DEPS:
+    if not _is_installed(_module_name):
+        if not _pip_install(_package):
+            _deps_ok = False
+
+if not _deps_ok:
+    print("Error: one or more required libraries could not be installed automatically.")
+    print("Try manually: pip3 install numpy sounddevice scipy librosa soundfile --break-system-packages")
+    sys.exit(1)
+
+try:
+    import numpy as np
+    import sounddevice as sd
+    import librosa
+    import soundfile as sf
+except Exception as e:
+    print(f"Error: Missing or unusable required library even after install attempt: {e}")
+    if "PortAudio" in str(e):
+        print("Hint: the 'sounddevice' Python package is installed, but its underlying")
+        print("PortAudio system library is missing. pip cannot install this for you.")
+        print("  Debian/Ubuntu : sudo apt-get install libportaudio2")
+        print("  macOS         : brew install portaudio")
+        print("  Windows       : PortAudio ships bundled; try reinstalling sounddevice")
+    sys.exit(1)
 
 # ---------------------------------------------------------------------------
 #  CONSTANTS
@@ -1157,19 +1193,6 @@ def run_embed():
     except: depth = 0.15
 
     try:
-        try:
-            import importlib
-            import importlib.util
-            if importlib.util.find_spec("scipy") is None:
-                print("  Installing missing package: scipy ...")
-                import subprocess
-                subprocess.check_call(
-                    [sys.executable, "-m", "pip", "install",
-                     "--break-system-packages", "--quiet", "scipy"]
-                )
-                print("  Installation complete.\n")
-        except Exception as _install_err:
-            print(f"  Error installing scipy: {_install_err}"); return
         from scipy.io import wavfile
 
         sr, data = wavfile.read(inp)
@@ -1192,6 +1215,75 @@ def run_embed():
         print(f"  Modulation depth: {depth*100:.0f}%")
     except Exception as e:
         print(f"  Error processing WAV: {e}"); return
+
+# ---------------------------------------------------------------------------
+#  FREQUENCY DETECTION
+# ---------------------------------------------------------------------------
+
+def detect_frequency(file_path, duration=60):
+    """
+    Detect the dominant frequency in an audio file.
+
+    Parameters:
+        file_path (str): Path to the audio file.
+        duration (int, optional): Duration in seconds to analyze. Defaults to 60.
+
+    Returns:
+        float: The dominant frequency in Hz.
+    """
+    try:
+        # Read audio file with soundfile (supports many formats)
+        audio_data, sample_rate = sf.read(file_path, always_2d=True)
+
+        # Extract the first channel if the audio is stereo
+        audio_data = audio_data[:, 0]
+
+        # Truncate or pad the audio to the desired duration
+        max_samples = int(sample_rate * duration)
+        audio_data = audio_data[:max_samples] if len(audio_data) > max_samples else np.pad(
+            audio_data, (0, max_samples - len(audio_data)), 'constant'
+        )
+
+        if len(audio_data) == 0:
+            raise ValueError("Audio file contains no data or is too short for analysis.")
+
+        # Perform FFT on the audio data
+        fft_result = np.fft.rfft(audio_data)
+        freqs = np.fft.rfftfreq(len(audio_data), 1.0 / sample_rate)
+
+        # Find the dominant frequency
+        dominant_freq = freqs[np.argmax(np.abs(fft_result))]
+        print(f"  The dominant frequency is {dominant_freq:.2f} Hz.")
+        return dominant_freq
+
+    except FileNotFoundError:
+        print("  Error: The specified audio file was not found.")
+    except ValueError as e:
+        print(f"  Error: {e}")
+    except RuntimeError as e:
+        print(f"  Error: {e}")
+    except Exception as e:
+        print(f"  An unexpected error occurred: {e}")
+
+
+def run_detect():
+    W = 64
+    print()
+    print("="*W)
+    print("  Detect Frequency -- find the dominant frequency in an audio file")
+    print("="*W)
+    print()
+    print("  Reads an audio file and reports its dominant frequency via FFT")
+    print("  analysis of the first channel, over up to the first N seconds.")
+    print()
+    inp = input("  Audio file path : ").strip().strip('"')
+    if not os.path.isfile(inp):
+        print("  Error: file not found."); return
+    v = input("  Seconds to analyze [60]: ").strip()
+    try:    dur = int(v) if v else 60
+    except: dur = 60
+    print()
+    detect_frequency(inp, dur)
 
 # ---------------------------------------------------------------------------
 #  CONSOLE UI
@@ -1298,7 +1390,11 @@ def choose_suite():
     print("  6  Embed Mode")
     print("       AM-modulate an existing WAV file at a target beat frequency.")
     print()
-    return ask_int("  Enter number (1-6): ", 1, 6)
+    print("  7  Detect Frequency")
+    print("       Analyze an existing audio file and report its dominant")
+    print("       frequency via FFT.")
+    print()
+    return ask_int("  Enter number (1-7): ", 1, 7)
 
 def choose_preset(suite, title):
     print()
@@ -1527,6 +1623,9 @@ def main():
 
     if choice == 6:
         run_embed(); return
+
+    if choice == 7:
+        run_detect(); return
 
     if   choice == 1: p = choose_preset(SUITE_GENERAL,    "General Brainwave Suite")
     elif choice == 2: p = choose_preset(SUITE_ATTENTION,  "Attention & Cognition Suite")
