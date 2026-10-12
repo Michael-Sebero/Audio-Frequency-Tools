@@ -1,86 +1,149 @@
 ============================================
-               *** README ***               
+               *** README ***
 ============================================
 
-Brainwaves in the human brain occur in distinct frequencies, measured in cycles per second (Hz), and are influenced by the principle of resonance. This principle states that a system—whether mechanical, electrical, or biological—will experience a large-amplitude vibration when exposed to a periodic stimulus that matches or closely aligns with its natural frequency. In the context of brainwaves, this means that external stimuli, such as sound, light, or touch, can induce the brain to synchronize with those frequencies.
+Brainwaves are rhythmic electrical activity of the brain, measured in cycles
+per second (Hz).  The "brainwave entrainment" hypothesis holds that a
+rhythmic external stimulus (sound, light or touch) can pull the brain's
+activity toward the stimulus frequency.
 
-For example, when energy waves—whether visual, auditory, or tactile—reach the brain, they can cause the brain's electrical activity to resonate, aligning with the frequency of the incoming stimulus. A well-known phenomenon of this is the occurrence of seizures in some individuals when exposed to a flickering light at around 10 Hz, a frequency that resonates with certain brainwave patterns.
+What is well established: rhythmic sound evokes a measurable brain response
+that follows the stimulus, the auditory steady-state response (ASSR), which
+is largest near 40 Hz (Chaieb et al. 2015).  What is NOT established:
+that this response reliably shifts the brain into a whole-brain "state".
+A 2023 systematic review of 14 EEG studies found 5 consistent with
+entrainment, 8 against and 1 mixed.  No study found entrainment in the
+beta band (Ingendoh et al. 2023).  Behavioural effects of binaural beats are
+real but modest: overall g = 0.45 across 22 studies (Garcia-Argibay et al.
+2018), and in several studies they appeared without any measurable EEG
+entrainment (Engelbregt et al. 2021).
 
-In a series of papers starting in 2016 demonstrated that light flickering and/or sound clicking at 40 Hz (a technology called GENUS for Gamma Entrainment Using Sensory stimuli), reduces levels of amyloid-beta and tau proteins, prevents neuron death and preserves synapses and even sustains learning and memory in a variety of Alzheimer’s disease mouse models. Most recently in pilot clinical studies the team showed that 40 Hz light and sound stimulation was safe, successfully increased brain activity and connectivity and appeared to produce significant clinical benefits in a small cohort of human volunteers with early-stage Alzheimer’s disease. Other groups have replicated and corroborated health benefits of 40 Hz sensory stimulation and an MIT spin-off company, Cognito Therapeutics, has launched stage III clinical trials of light and sound stimulation as an Alzheimer’s treatment.
+Flashing light is a different matter.  In photosensitive people, flicker
+can trigger seizures, most often at roughly 15-20 flashes per second.  That
+is a visual effect.  It does not carry over to sound.
 
-In auditory resonance, sound waves within the human hearing range can also influence brainwave activity, as the brain responds to vibrations within this range. The audio spectrum encompasses the frequencies of sound that the human ear can consciously detect, and these frequencies can directly affect brainwave patterns, just as light frequencies can influence visual processing and cognitive states.
+40 Hz AND ALZHEIMER'S DISEASE.  From 2016 the MIT Picower Institute (Tsai
+lab) showed that 40 Hz light flicker, and later 40 Hz sound (1 ms clicks at
+10 kHz, 40 per second), for 1 hour a day reduced amyloid-beta and tau,
+prevented neuron loss and improved memory in Alzheimer's mouse models.
+Light and sound together worked best (GENUS: Gamma ENtrainment Using
+Sensory stimuli).  Pilot human studies found 40 Hz light + sound safe, with
+signs of preserved brain volume and cognition, and Cognito Therapeutics has
+launched a pivotal trial.  Caution: a 10-day course of 40 Hz light (2 h a
+day) produced no change in amyloid in six patients (Ismail et al. 2018).
+Human benefit is not yet proven.
 
-The audio spectrum, the range of sound frequencies detectable by the human ear, spans from approximately 15 Hz (bass) to 20,000 Hz (treble). Below this range lies the infrasonic spectrum (10–15 Hz), which is too low to be consciously heard but can still induce resonance in the brain. Below the infrasonic range are Extremely Low Frequency (ELF) waves, which are powerful enough to travel through the Earth and are used in submarine communication.
+THE AUDIO SPECTRUM.  Human hearing spans roughly 20 Hz to 20,000 Hz; the
+upper limit falls with age, and many adults hear little above 15-17 kHz.
+Sound below 20 Hz is INFRASOUND.  It is not inaudible: it can be heard or
+felt at very high levels (about 90-100 dB SPL at 12 Hz), but ordinary
+headphones and speakers cannot produce it at those levels.
 
-Brainwave resonance (BWR) plays a significant role in human interaction, both passively and actively. In passive contexts, an environment may be saturated with EMS waves that correspond to specific brainwave frequencies, influencing the mood and cognitive state of individuals within it without their conscious awareness. For example, a relaxed, cooperative conversation is more likely in an environment that supports an alpha brainwave resonance (8-12 Hz), while attempting to solve complex or creative tasks in a delta environment (1-4 Hz) would likely be exhausting and unproductive.
+Extremely Low Frequency (ELF, 3-300 Hz) in the submarine-communication sense
+refers to ELECTROMAGNETIC waves.  They are a different physical phenomenon
+from sound at the same number of cycles per second.  An audio file cannot
+produce them.
+
+The original manual claimed that environments "saturated" with brainwave-
+frequency waves shape mood without awareness (alpha environments favouring
+cooperation, delta environments making work exhausting).  This comes from
+the BWR / MindWar framework.  It has not been tested, and the 1980 MindWar
+paper's own source for it is a popular book (Playfair & Hill 1978).
 
 ============================================
-      BRAINWAVE FREQUENCIES & EFFECTS      
+      BRAINWAVE FREQUENCIES & EFFECTS
 ============================================
 
-[ 0.5 - 3 Hz ] → DEEP SLEEP & HEALING
+"EEG" lines describe the mental state the band accompanies (a correlation).
+"Evidence" lines describe what playing that frequency as sound has actually
+been shown to do.
+
+[ 0.5 - 4 Hz ] -> DELTA: DEEP SLEEP
 -------------------------------------
-• Effect: Induces deep sleep, promotes immune function, and accelerates physical healing.
-• Use: Sleep therapy, anxiety relief, and recovery.
-• Best Format: Binaural.
+- EEG: dominant in deep (N3) sleep; awake delta is not restorative.
+- Evidence: delta-range binaural beats for 30 min BEFORE a stressful event
+  reduced anxiety (Padmanabhan 2005; Wahbeh 2007b).  Delta beats DURING a
+  task worsened vigilance and mood (Lane 1998).  Sleep was not tested.
+- Best format: binaural (headphones).
 
-[ 4 - 7 Hz ] → EMOTIONAL PROCESSING & STRESS REGULATION
+[ 4 - 7 Hz ] -> THETA: DROWSINESS, MEDITATION, RELAXATION
 -------------------------------------------------------
-• Effect: Heightens emotions, imagination, and frustration; linked to anger suppression.
-• Use: Meditation, emotional healing, dream states, subconscious access.
-• Best Format: Binaural.
+- EEG: drowsiness, hypnagogia, meditation; frontal-midline theta during
+  internal focus.
+- Evidence: reduced pre-operative anxiety after 10 min (Isik 2017).  Theta
+  beats IMPAIRED memory encoding (Garcia-Argibay 2017; Wahbeh 2007a).
+- Original claim "heightens emotions, frustration; anger suppression":
+  not supported; most evidence points the other way.
+- Best format: binaural.  Use at rest, not while studying.
 
-[ 7.83 Hz ] → MENTAL STABILIZATION & GROUNDING
+[ 7.83 Hz ] -> SCHUMANN RESONANCE
 ----------------------------------------------
-• Effect: Promotes mental balance.
-• Use: Stress relief, grounding, reducing brain fog.
-• Best Format: Mono or Binaural.
+- The Earth-ionosphere cavity's electromagnetic resonance.  An acoustic
+  7.83 Hz beat has no physical link to it.
+- Evidence: none specific to 7.83 Hz.
+- Best format: binaural (behaves as a theta/alpha beat).
 
-[ 8 - 12 Hz ] → RELAXATION, MEDITATION & PATTERN RECOGNITION
+[ 8 - 12 Hz ] -> ALPHA: RELAXED WAKEFULNESS
 ------------------------------------------------------------
-• Effect: Enhances calmness, creativity, and pattern recognition; reduces stress.
-• Use: Meditation, mindfulness, problem-solving.
-• Best Format: Binaural.
+- EEG: relaxed, eyes-closed rest.
+- Evidence: 10 Hz beats raised alpha power after 5 min in one study (Kim
+  2023), not in several others.  Lowered anxiety (Weiland 2011).  9.55 Hz
+  for 12 min before a task improved working memory (Kraus & Porubanova 2015).
+- Best format: binaural.
 
-[ 13 - 22 Hz ] → FOCUS, CONCENTRATION & LOGICAL THINKING
+[ 13 - 30 Hz ] -> BETA: FOCUS, ACTIVE THINKING
 --------------------------------------------------------
-• Effect: Enhances attention, logical thinking, and decision-making.
-• Use: Studying, working, cognitive performance.
-• Best Format: Binaural.
+- EEG: focused attention, deliberate processing; excess high beta
+  accompanies anxiety (a correlation, not a cause).
+- Evidence: 16/24 Hz beats during a 30-min vigilance task improved
+  performance and mood vs delta/theta beats (Lane 1998).  20 Hz beats
+  before and during study improved recall (Garcia-Argibay 2017).  15 Hz
+  beats improved self-rated study in adult ADHD (Malandrone 2022).  No EEG
+  entrainment found in this band (Ingendoh 2023).
+- Best format: binaural.
 
-[ 15 Hz ] → HEADACHE & NAUSEA
+[ 15 Hz ] and [ 17 Hz ] -> ORIGINAL "HEADACHE / ANXIETY" CLAIMS
 -----------------------------
-• Effect: Can induce mild discomfort, headaches, or overstimulation.
-• Use: Not recommended for relaxation; can be used for alertness.
-• Best Format: Mono.
+- No study supports them, and the 15-16 Hz studies above contradict them.
+  The claims likely stem from photosensitivity to flashing LIGHT.
+- "Mono" correction: a raw 15 or 17 Hz sine is infrasonic and inaudible on
+  normal equipment.  The speaker-friendly equivalent of a binaural beat is
+  a MONAURAL beat (two tones mixed together), e.g. 400 + 415 Hz.
 
-[ 17 Hz ] → ANXIETY & VISUAL DISTURBANCES
------------------------------------------
-• Effect: Linked to discomfort, anxiety, and potential visual flicker effects.
-• Use: Not recommended for general use; relevant for controlled research.
-• Best Format: Mono.
-
-[ 40 Hz ] → AMYLOID REDUCTION & COGNITIVE BOOST
+[ 40 Hz ] -> GAMMA: 40 Hz STIMULATION
 -----------------------------------------------
-• Effect: Shown to reduce amyloid plaque buildup (potential Alzheimer’s prevention).
-• Use: Cognitive enhancement, mental clarity, neuroprotection.
-• Best Format: Mono or Binaural.
+- EEG: gamma accompanies perceptual binding and working memory; it is
+  reduced in Alzheimer's disease.
+- Evidence: amyloid/tau reduction and memory gains in mice (GENUS, 1 h a
+  day; see above).  In humans, 40 Hz binaural beats improved attention
+  (Colzato 2017; Hommel 2016; Reedijk 2015; Engelbregt 2021), sometimes
+  without any gamma EEG increase.
+- Best format: depends on the goal.
+    Alzheimer's/GENUS: 40 Hz click train (speakers OK).
+    Attention studies: binaural beats; MONAURAL beats at the same tones
+    INCREASED errors (Engelbregt 2021).  The original "mono or binaural,
+    both effective" is therefore not accurate.
 
-[ 40 - 70 Hz ] → FRONTAL LOBE STIMULATION & HIGH-LEVEL THINKING
+[ 40 - 70 Hz ] -> UPPER GAMMA
 ---------------------------------------------------------------
-• Effect: Enhances problem-solving, neuroplasticity, memory, and executive function.
-• Use: Learning, mental performance, dementia therapy.
-• Best Format: Mono or Binaural (both effective, binaural preferred for deeper entrainment).
+- Evidence: the 40 Hz findings do not extend upward.  A 57.3 Hz beat had no
+  EEG effect (Lopez-Caballero 2017).  The original claims of frontal-lobe
+  stimulation and neuroplasticity are not supported.
 
 ============================================
-            ADDITIONAL NOTES               
+            ADDITIONAL NOTES
 ============================================
 
-• Delta & Theta Waves (0.5 - 7 Hz) → Best for relaxation, sleep, and subconscious processing.
-• Alpha Waves (8 - 12 Hz) → Ideal for calming the mind and improving pattern recognition.
-• Beta Waves (13 - 22 Hz) → Enhance logical thinking but can overstimulate some individuals.
-• Gamma Waves (40 - 70 Hz) → Essential for high-level cognition and frontal lobe activity.
+- Binaural = headphones (each ear gets one tone; the beat is created in the
+  brainstem).  Monaural / isochronic = speakers or headphones (the beat is
+  physically in the sound).
+- Binaural beats need tones below ~1000 Hz (400 Hz is typical) and are only
+  HEARD as beats up to ~30 Hz difference.  40 Hz binaural beats still evoke a
+  measurable brain response.
+- Timing matters: exposure before, or before and during, a task gave larger
+  effects than exposure during it only (Garcia-Argibay 2018).  Longer
+  exposure gave larger effects.
+- Beats embedded in music were less effective than unmasked beats; white or
+  pink noise backgrounds made no significant difference (Garcia-Argibay 2018).
 
-> Binural is for headphones and Mono is for speakers.
-
-> This program defaults to Mono if the "b" flag isn't added.
+> Full citations and the list of corrections: see AUDIT.md.

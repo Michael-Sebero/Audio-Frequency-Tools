@@ -1,1287 +1,1560 @@
 """
 Audio Frequency Tools
 =====================================
-Combines a brainwave/entrainment tone generator (binaural, isochronic, mono,
-infrasonic, subliminal, parametric and surround delivery modes, plus a WAV
-embed mode) with a dominant-frequency detector for existing audio files.
+Brainwave-entrainment tone generator (binaural, monaural, isochronic, pure
+tone, infrasonic, high-carrier AM, parametric and surround delivery modes,
+plus an embed mode for existing recordings) and an analyser that measures
+carrier tones, binaural offsets and amplitude-modulation rates in audio files.
 
-Requirements (auto-installed on first run if missing)
-  numpy, sounddevice, scipy, librosa, soundfile
+Every preset states the study it comes from, the stimulus that study actually
+used, and how strong the evidence is.  AUDIT.md lists the corrections made
+against the source literature.
+
+Usage
+  python3 audio-frequency-tools.py                  interactive menu
+  python3 audio-frequency-tools.py --detect FILE    analyse an audio file
+  python3 audio-frequency-tools.py --selftest       render every preset and
+                                                     verify it with the analyser
+Requirements
+  numpy, scipy, soundfile  (+ sounddevice and PortAudio for live playback)
 """
 
+import argparse
+import importlib
+import importlib.util
 import math
 import os
 import queue
 import signal
 import subprocess
 import sys
+import tempfile
+import textwrap
 import threading
 import time
 
 # ---------------------------------------------------------------------------
-#  AUTO-INSTALL MISSING PACKAGES
+#  DEPENDENCIES
 # ---------------------------------------------------------------------------
-
-def _is_installed(module_name: str) -> bool:
-    """Check whether a module is importable without actually importing it into this namespace.
-    Some packages (e.g. sounddevice) raise OSError instead of ImportError when their
-    underlying native/system library is missing, so any import-time failure counts."""
-    try:
-        __import__(module_name)
-        return True
-    except Exception:
-        return False
-
-
-def _pip_install(package: str) -> bool:
-    """Install a package with pip3, using --break-system-packages. Returns True on success."""
-    print(f"  Missing dependency '{package}' — installing...")
-    try:
-        subprocess.run(
-            ["pip3", "install", "--break-system-packages", package],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        return True
-    except subprocess.CalledProcessError as e:
-        print(f"  Failed to install '{package}': {e.stderr.strip() if e.stderr else e}")
-        return False
-    except FileNotFoundError:
-        print("  pip3 not found on this system; skipping auto-install")
-        return False
-
 
 _REQUIRED_DEPS = [
     ("numpy", "numpy"),
-    ("sounddevice", "sounddevice"),
     ("scipy", "scipy"),
-    ("librosa", "librosa"),
     ("soundfile", "soundfile"),
+    ("sounddevice", "sounddevice"),   # only needed for live playback
 ]
 
-_deps_ok = True
-for _module_name, _package in _REQUIRED_DEPS:
-    if not _is_installed(_module_name):
-        if not _pip_install(_package):
-            _deps_ok = False
 
-if not _deps_ok:
-    print("Error: one or more required libraries could not be installed automatically.")
-    print("Try manually: pip3 install numpy sounddevice scipy librosa soundfile --break-system-packages")
-    sys.exit(1)
+def _is_installed(module_name: str) -> bool:
+    """Check whether a module can be found without importing it.  Importing
+    sounddevice raises OSError when the PortAudio system library is missing,
+    which pip cannot fix, so that case is handled at playback time instead."""
+    try:
+        return importlib.util.find_spec(module_name) is not None
+    except (ImportError, ValueError):
+        return False
 
-try:
-    import numpy as np
-    import sounddevice as sd
-    import librosa
-    import soundfile as sf
-except Exception as e:
-    print(f"Error: Missing or unusable required library even after install attempt: {e}")
-    if "PortAudio" in str(e):
-        print("Hint: the 'sounddevice' Python package is installed, but its underlying")
-        print("PortAudio system library is missing. pip cannot install this for you.")
-        print("  Debian/Ubuntu : sudo apt-get install libportaudio2")
-        print("  macOS         : brew install portaudio")
-        print("  Windows       : PortAudio ships bundled; try reinstalling sounddevice")
-    sys.exit(1)
+
+def _pip_install(packages) -> bool:
+    """Install packages with the pip belonging to *this* interpreter."""
+    cmd = [sys.executable, "-m", "pip", "install", "--break-system-packages", *packages]
+    print("  Running: " + " ".join(cmd))
+    try:
+        subprocess.run(cmd, check=True)
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        print(f"  pip failed: {e}")
+        return False
+
+
+def _ensure_deps():
+    missing = [pkg for mod, pkg in _REQUIRED_DEPS if not _is_installed(mod)]
+    if not missing:
+        return
+    print(f"Missing Python packages: {', '.join(missing)}")
+    installed = False
+    if sys.stdin.isatty():
+        ans = input("Install them now with pip for this interpreter? [y/N]: ").strip().lower()
+        if ans in ("y", "yes"):
+            installed = _pip_install(missing)
+            importlib.invalidate_caches()
+    if not installed:
+        print(f"Install manually:  {sys.executable} -m pip install {' '.join(missing)}")
+        if any(p != "sounddevice" for p in missing):
+            sys.exit(1)
+        print("Continuing without live playback (export and analysis still work).\n")
+
+
+_ensure_deps()
+
+import numpy as np
+import soundfile as sf
+from scipy import fft as spfft
+from scipy import signal as sps
+
+
+def _load_sounddevice():
+    """Import sounddevice lazily so export, analysis and the self-test work on
+    machines without PortAudio."""
+    try:
+        import sounddevice as sd
+        return sd
+    except ImportError:
+        print("  Live playback needs the 'sounddevice' package:")
+        print(f"    {sys.executable} -m pip install sounddevice")
+    except OSError as e:
+        print(f"  Live playback unavailable: {e}")
+        print("  The 'sounddevice' package is installed, but the PortAudio system")
+        print("  library is missing.  pip cannot install it for you.")
+        print("    Arch          : sudo pacman -S portaudio")
+        print("    Debian/Ubuntu : sudo apt-get install libportaudio2")
+        print("    macOS         : brew install portaudio")
+    print("  You can still export the session to an audio file instead.")
+    return None
 
 # ---------------------------------------------------------------------------
 #  CONSTANTS
 # ---------------------------------------------------------------------------
 
-SR_DEFAULT         = 44100
-SR_HIGH            = 96000
-BLOCK_SIZE         = 4096
-PREFILL            = 4
-DTYPE              = "float32"
-FADE_S             = 4.0
-CARRIER_OPTIMAL    = 400.0
-SUBLIMINAL_CARRIER = 18500.0
-PARAMETRIC_BASE    = 40000.0
-BINAURAL_LIMIT     = 30.0
+SR_DEFAULT           = 44100
+BLOCK_SIZE           = 4096
+PREFILL              = 4
+DTYPE                = "float32"
+FADE_S               = 4.0      # fade in / scheduled fade out
+STOP_FADE_S          = 1.5      # fade out after Ctrl+C
+CARRIER_OPTIMAL      = 400.0    # Goodin et al. (2012), via Ingendoh et al. (2023)
+SUBLIMINAL_CARRIER   = 18500.0
+PARAMETRIC_BASE      = 40000.0
+BINAURAL_LIMIT       = 30.0     # beat percept limit, Perrott & Nelson (1969)
+BINAURAL_CARRIER_MAX = 1000.0   # Licklider et al. (1950); Oster (1973)
+NOISE_RMS            = 0.25     # fixed masking-noise level before blending
+DEFAULT_NOISE_LVL    = 0.25
 
-# Research-backed minimum session lengths (seconds).
-# Sources: Jirakittayakorn & Wongsawat (2017) Frontiers Neurosci — theta 6 min;
-#          Kim et al. (2023) — alpha 5 min;
-#          Jirakittayakorn & Wongsawat (2017b) — gamma 15 min;
-#          Garcia-Argibay et al. (2018) Psych Research — general 9-10 min optimal;
-#          Ingendoh et al. (2023) PLoS ONE — overall review of 14 EEG studies.
-MIN = {
-    "delta": 1200,   # 20 min  — limited entrainment evidence
-    "theta": 600,    # 10 min  — EEG confirmed at parietal/temporal after 6 min
-    "alpha": 600,    # 10 min  — EEG confirmed frontal–occipital after 5 min
-    "beta":  600,    # 10 min  — zero EEG entrainment confirmed; cognitive effects only
-    "gamma": 900,    # 15 min  — EEG confirmed temporal/frontal/central after 15 min
-    "other":   0,
-}
-
-# Evidence strength codes for display
-# "Strong"       — meta-analysis support and/or multiple independent replications
-# "Moderate"     — single well-controlled RCT or multiple smaller studies
-# "Limited"      — pilot data only or preliminary findings
-# "Inconclusive" — no reliable entrainment demonstrated; effect mechanism unknown
-EVIDENCE = {
-    "gamma_attention":  "Moderate",
-    "adhd_15hz":        "Limited",
-    "alpha_memory":     "Moderate",
-    "beta_memory":      "Moderate",
-    "delta":            "Limited",
-    "theta":            "Moderate",
-    "alpha_relax":      "Moderate",
-    "beta_lo":          "Inconclusive",
-    "beta_hi":          "Inconclusive",
-    "schumann":         "Limited",
+MODES = {
+    "binaural":   "two tones, one per ear; headphones required",
+    "monaural":   "two tones mixed in both ears; physical beat, speakers OK",
+    "isochronic": "carrier switched on/off at the beat rate; speakers OK",
+    "mono":       "single pure tone at the given frequency",
+    "infrasonic": "pure tone below 20 Hz; needs a subwoofer",
+    "hf_am":      "high-frequency carrier, amplitude-modulated (was 'subliminal')",
+    "parametric": "two ultrasonic tones; needs a parametric speaker array",
+    "surround":   "isochronic tone on every output channel",
 }
 
 # ---------------------------------------------------------------------------
 #  PRESET DATA
+#
+#  ref_s / ref_src : exposure used in the cited study.  No study establishes a
+#                    minimum effective dose; Garcia-Argibay et al. (2018) found
+#                    larger effects with longer exposure (b = 0.01 per minute).
+#  timing          : when the cited study played the audio relative to the task.
+#  pre_s           : default pre-task induction for "before_and_during" presets.
+#  noise/noise_lvl : masking noise used in the cited study (offered as default).
+#  pulse_ms        : isochronic pulse width; overrides duty when set.
 # ---------------------------------------------------------------------------
 
+_PRESET_DEFAULTS = dict(
+    duty=0.5, pulse_ms=None, timing="during", ref_s=None, ref_src="", pre_s=None,
+    noise=None, noise_lvl=0.0, evidence="", desc="", detail="",
+)
+
+
+def preset(**kw):
+    return {**_PRESET_DEFAULTS, **kw}
+
+
 SUITE_GENERAL = [
-    dict(
-        label    = "Delta  1.5 Hz  --  Deep sleep / physical recovery",
+    preset(
+        label    = "Delta  1.5 Hz  --  Anxiety reduction before a stressful event",
         mode     = "binaural", beat_hz=1.5, carrier_hz=400.0,
-        duty     = 0.5, band="delta", evidence="Limited",
-        timing   = "during",
+        evidence = "Moderate (anxiety) / none (sleep)",
+        timing   = "before", ref_s=1800, ref_src="Padmanabhan 2005; Wahbeh 2007b",
+        noise    = "pink", noise_lvl=DEFAULT_NOISE_LVL,
         desc     = """\
-    Dominant during NREM stage 3 deep sleep.  Associated with physical
-    restoration, immune regulation and growth hormone release.
-    Waking delta does not replicate sleep benefits.  Use for sleep onset.
-    Headphones required.  Research minimum: 20 min.  Evidence: Limited.""",
+    Delta (0.5-4 Hz) dominates deep NREM sleep.  Delta-range beats heard for
+    30 min BEFORE a stressful event reduced anxiety (Padmanabhan 2005;
+    Wahbeh 2007b).  No study in the provided literature tested sleep.
+    Headphones required.  Evidence: Moderate (anxiety) / none (sleep).""",
         detail   = """\
-    Delta oscillations (0.5-3 Hz) are the slowest recorded brainwave pattern
-    and occur naturally only during deep, dreamless sleep.  They are associated
-    with physical restoration, immune regulation and hormonal release (including
-    growth hormone).  Delta is not a conscious state; its presence during
-    wakefulness typically indicates drowsiness, pathology, or neurological
-    abnormality rather than a beneficial condition.
+    Delta oscillations (0.5-4 Hz) are the dominant rhythm of deep (N3) sleep.
+    Waking delta does not reproduce the restorative effects of sleep.
 
-    Waking delta stimulation does not replicate the restorative effects of
-    natural delta sleep.  These are not equivalent processes.  This preset
-    is best used as a sleep-onset aid rather than a daytime tool.
+    WHAT THE STUDIES SHOW
+      Padmanabhan et al. (2005): delta-range binaural beats for 30 min before
+        surgery cut anxiety scores by 26.3%, vs 11.1% for a sham recording
+        (Chaieb et al. 2015 review).
+      Wahbeh et al. (2007b): delta beats in pink noise, 30 min a day for 60
+        days, lowered trait anxiety (uncontrolled pilot, n = 8).
+      Garcia-Argibay et al. (2018) meta-analysis, anxiety subgroup:
+        g = 0.69 [0.39, 0.99], 5 effect sizes, no heterogeneity.
+      Lane et al. (1998): 1.5/4 Hz beats DURING a 30-min vigilance task gave
+        worse vigilance and more negative mood than 16/24 Hz beats.  Do not
+        use delta when you need to stay alert.
 
-    Delivery: binaural beat at 400 Hz carrier (research-optimal per Goodin
-    et al.).  Headphones required.  Research minimum: 20 minutes.  Effect
-    evidence for waking delta entrainment is limited.
-    Evidence: Limited.""",
+    EEG: Gao et al. (2014) found no delta power increase after 5 min of a
+    1 Hz beat (Ingendoh et al. 2023).  Below ~3 Hz the beat is heard as a
+    tone rotating between the ears rather than a pulsation.
+
+    Delivery: binaural beat, 400 Hz carrier (Goodin et al. 2012), pink noise
+    as in Wahbeh 2007b.  Headphones required.
+    Studied exposure: 30 min, before the event.""",
     ),
-    dict(
-        label    = "Theta  6 Hz  --  Relaxation / creativity / emotional processing",
-        mode     = "binaural", beat_hz=6.0, carrier_hz=400.0,
-        duty     = 0.5, band="theta", evidence="Moderate",
-        timing   = "before_and_during",
+    preset(
+        label    = "Theta  6 Hz  --  Relaxation / anxiety reduction (not for study)",
+        mode     = "binaural", beat_hz=6.0, carrier_hz=250.0,
+        evidence = "Mixed (EEG) / Moderate (anxiety)",
+        timing   = "before", ref_s=600, ref_src="Isik 2017; Jirakittayakorn & Wongsawat 2017",
         desc     = """\
-    Prominent during light sleep, hypnagogic states and deep meditation.
-    Associated with memory consolidation, emotional processing and creative
-    ideation.  EEG confirmed at parietal/temporal sites after 6 min.
-    Garcia-Argibay (2018): exposure before+during superior to during-only.
-    Headphones required.  Research minimum: 10 min.  Evidence: Moderate.""",
+    Theta (4-7 Hz) is prominent in drowsiness, hypnagogia and meditation.
+    10 min of theta beats before dental surgery reduced anxiety (Isik 2017).
+    Theta beats IMPAIRED word recall (Garcia-Argibay 2017; Wahbeh 2007a), so
+    do not use while studying.  Headphones required.
+    Evidence: Mixed (EEG) / Moderate (anxiety).""",
         detail   = """\
-    Theta oscillations (4-7 Hz) are prominent during light sleep, the hypnagogic
-    (pre-sleep) state and deep meditative states.  They are associated with
-    memory consolidation, emotional processing and creative ideation.  Elevated
-    waking theta in the frontal midline has been correlated with focused internal
-    attention in some research contexts.  However, prolonged waking theta can
-    also correlate with inattentiveness and drowsiness.
+    Theta oscillations (4-7 Hz) are prominent during drowsiness, the
+    hypnagogic state and meditation.  Frontal-midline theta also accompanies
+    focused internal attention.
 
-    EEG confirmation: theta power increase at parietal and temporal electrode
-    sites after 6 minutes of stimulation at 400 Hz carrier.
-    Source: Jirakittayakorn & Wongsawat (2017), Frontiers in Neuroscience.
-    400 Hz is the research-optimal carrier for binaural beat perception.
+    EEG EVIDENCE (Ingendoh et al. 2023 systematic review)
+      For:     Jirakittayakorn & Wongsawat (2017, Front Neurosci): a 6 Hz beat
+               on a 250 Hz carrier raised theta power at almost all electrodes
+               over a 30-min session.  Seifi Ala et al. (2018): relative (not
+               absolute) theta power rose at parietal and temporal sites.
+               Reported onset: 6-10 min of listening.
+      Against: Gao 2014, Lopez-Caballero 2017, Crespo 2013, da Silva Junior
+               2019, Solca 2016 and Wahbeh 2007 found no theta entrainment.
 
-    TIMING NOTE: Garcia-Argibay et al. (2018) meta-analysis of 22 studies found
-    exposure before, and before+during the task produced larger effects than
-    during-task-only exposure.  Use the "Pre-task induction" duration option.
+    BEHAVIOUR
+      Anxiety: Isik et al. (2017), 10 min before dental surgery, g = 0.73.
+      Memory:  5 Hz beats lowered free recall and recognition (Garcia-Argibay
+               2017).  7 Hz for 30 min lowered verbal recall (Wahbeh 2007a).
+               Ortiz et al. (2008, 5 Hz, twice a day for 15 days) is the one
+               positive exception.
 
-    Note: theta stimulation during cognitively demanding active tasks may reduce
-    rather than enhance performance.  Best used during rest or passive states.
-
-    Delivery: binaural beat.  Headphones required.
-    Research minimum: 10 minutes.  Evidence: Moderate.""",
+    Delivery: binaural beat, 250 Hz carrier (Jirakittayakorn & Wongsawat
+    protocol).  Headphones required.  Use at rest, before rather than during
+    demanding cognitive work.  Studied exposure: 10 min (Isik) to 30 min.""",
     ),
-    dict(
-        label    = "Schumann  7.83 Hz  --  Earth electromagnetic resonance",
+    preset(
+        label    = "Schumann  7.83 Hz  --  Earth-ionosphere resonance (no direct evidence)",
         mode     = "binaural", beat_hz=7.83, carrier_hz=400.0,
-        duty     = 0.5, band="theta", evidence="Limited",
-        timing   = "during",
+        evidence = "None found (Schumann-specific)",
         desc     = """\
-    The fundamental resonance frequency of the Earth-ionosphere cavity.
-    Falls at the alpha-theta boundary.  Referenced in grounding and
-    stress-relief contexts.  Peer-reviewed evidence is limited.
-    Headphones required.  Research minimum: 10 minutes.  Evidence: Limited.""",
+    7.83 Hz is the fundamental electromagnetic resonance of the cavity
+    between the Earth and the ionosphere, at the theta/alpha boundary.  No
+    study in the provided literature tested 7.83 Hz audio.  Any effect would
+    be that of a generic theta/alpha beat.  Headphones required.""",
         detail   = """\
-    7.83 Hz is the fundamental resonance frequency of the electromagnetic cavity
-    formed between the Earth's surface and the ionosphere.  It falls near the
-    alpha-theta boundary of human brainwave activity.
+    7.83 Hz is the fundamental resonance of the electromagnetic cavity
+    between the Earth's surface and the ionosphere.  It is an electromagnetic
+    phenomenon: an acoustic beat at the same number of cycles per second has
+    no physical connection to it.
 
-    Some researchers hypothesise a biological entrainment relationship between
-    the geomagnetic field and human neural oscillations.  Direct peer-reviewed
-    evidence of measurable therapeutic or neurological benefit from 7.83 Hz
-    audio stimulation in humans remains limited and inconclusive.
+    No study in the provided documents tested 7.83 Hz beats.  The nearest
+    evidence is for theta/delta beats in general, which consistently reduced
+    anxiety (Chaieb et al. 2015; Garcia-Argibay et al. 2018).
 
-    Chaieb et al. (2015) reviewed ABS literature and found consistent anxiety
-    reduction for delta/theta frequencies; Schumann-specific evidence is absent
-    from clinical literature.
-
-    Delivery: binaural beat.  Headphones required.
-    Research minimum: 10 minutes.  Evidence: Limited.""",
+    Delivery: binaural beat, 400 Hz carrier.  Headphones required.
+    Evidence: none found for 7.83 Hz specifically.""",
     ),
-    dict(
+    preset(
         label    = "Alpha  10 Hz  --  Relaxed wakefulness / stress reduction",
         mode     = "binaural", beat_hz=10.0, carrier_hz=250.0,
-        duty     = 0.5, band="alpha", evidence="Moderate",
-        timing   = "before_and_during",
+        evidence = "Mixed (EEG) / Limited (anxiety)",
+        ref_s    = 300, ref_src="Kim 2023",
         desc     = """\
-    Dominant during relaxed, eyes-closed wakefulness and light meditation.
-    EEG confirmed increase across frontal, central, parietal and occipital
-    alpha power after 5 min.  Kim et al. (2023), alpha 10 Hz, 250 Hz carrier.
-    Garcia-Argibay: anxiety reduction confirmed across multiple studies.
-    Headphones required.  Research minimum: 10 min.  Evidence: Moderate.""",
+    Alpha (8-12 Hz) dominates relaxed, eyes-closed wakefulness.  Kim et al.
+    (2023): 5 min of a 10 Hz beat on a 250 Hz carrier raised absolute alpha
+    power everywhere except the temporal area.  Vernon 2014, Gao 2014 and
+    others found no alpha entrainment.  Headphones required.
+    Evidence: Mixed (EEG) / Limited (anxiety).""",
         detail   = """\
     Alpha oscillations (8-12 Hz) are the dominant rhythm during relaxed,
-    wakeful states such as quiet reflection, closed-eye rest and light
-    meditation.  They are associated with reduced cortical arousal, lower
-    anxiety and a receptive cognitive state.
+    wakeful rest.  Higher alpha is a correlate of reduced cortical arousal,
+    not a direct cause of calm.
 
-    EEG confirmation: increased absolute alpha power across frontal, central,
-    parietal and occipital electrode areas after 5 minutes of stimulation
-    at 250 Hz carrier.  Source: Kim et al. (2023), Technology and Health Care.
+    EEG EVIDENCE (Ingendoh et al. 2023)
+      For:     Kim et al. (2023): 10 Hz beat, 250 Hz carrier, 5 min; absolute
+               alpha rose over frontal, central, parietal and occipital areas.
+               Ioannou et al. (2015): alpha power rose during alpha beats.
+      Against: Vernon 2014 (1-min epochs), Gao 2014, Lopez-Caballero 2017 and
+               Solca 2016 found no alpha entrainment.
 
-    Garcia-Argibay et al. (2018) meta-analysis (g = 0.69 for anxiety across
-    5 studies): theta/delta BB consistently reduce anxiety scores; alpha falls
-    at the boundary and shows similar effects.  Kraus & Porubanova (2015) found
-    alpha BB (9.55 Hz) improved working memory capacity.
+    BEHAVIOUR
+      Weiland et al. (2011): nature sounds with an embedded 10 Hz beat for
+        20 min lowered anxiety in emergency-department patients (Chaieb 2015).
+      Reedijk et al. (2015): alpha beats, attentional blink, g = 0.43.
+      Kraus & Porubanova (2015): 9.55 Hz beats improved working memory (see
+        the Attention & Cognition suite).
 
-    TIMING NOTE: Exposure before and during the task (Garcia-Argibay 2018)
-    produces superior cognitive effects to during-only.
-
-    Alpha increase is a correlate of reduced arousal rather than a direct
-    cause of calm.
-
-    CARRIER NOTE: This preset uses a 250 Hz carrier to replicate the exact
-    protocol of Kim et al. (2023), which is the primary EEG-confirmed study
-    cited here.  The research-general optimal carrier of 400 Hz (Goodin et al.)
-    was not used in that study; deviating to 400 Hz would not replicate the
-    confirmed EEG outcome.
-
-    Delivery: binaural beat at 250 Hz carrier (Kim et al. 2023 protocol).
-    Headphones required.  Research minimum: 10 minutes.  Evidence: Moderate.""",
+    Delivery: binaural beat, 250 Hz carrier to replicate Kim et al. (2023).
+    Headphones required.  Studied exposure: 5 min (Kim) to 20 min (Weiland).""",
     ),
-    dict(
-        label    = "15 Hz  --  Discomfort threshold  (caution)",
-        mode     = "mono", beat_hz=15.0, carrier_hz=15.0,
-        duty     = 0.5, band="other", evidence="Inconclusive",
-        timing   = "during",
+    preset(
+        label    = "15 Hz  --  BWR Manual 'discomfort' claim (not supported)",
+        mode     = "monaural", beat_hz=15.0, carrier_hz=400.0,
+        evidence = "Claim unsupported",
         desc     = """\
-    Not recommended for relaxation or general use.  Stimulation near 15 Hz
-    has been associated with discomfort, eye strain and headaches in
-    sensitive individuals.  Mono delivery.  Restrict to controlled contexts.
-    Evidence: Inconclusive.""",
+    The BWR Manual lists 15 Hz as causing headache and nausea.  No provided
+    study reports this.  15 Hz binaural beats were used in an ADHD trial
+    (Malandrone 2022), and 16 Hz beats improved vigilance and mood (Lane
+    1998).  Played as a monaural beat (400 + 415 Hz) so it works on speakers.""",
         detail   = """\
-    Stimulation near 15 Hz — particularly via visual flicker — has been
-    associated with discomfort, eye strain and headaches in sensitive
-    individuals.  This is partly explained by proximity to the alpha-beta
-    boundary and susceptibility in photosensitive subjects.
+    BWR MANUAL CLAIM: "15 Hz -> headache & nausea ... best format: mono".
+    None of the provided studies supports this claim, and two contradict it:
+      Malandrone et al. (2022): 15 Hz binaural beats (400/415 Hz) during study
+        sessions in adult ADHD improved subjective study performance.
+      Lane et al. (1998): 16/24 Hz binaural beats produced LESS negative mood
+        than 1.5/4 Hz beats.
+    The discomfort association comes from photosensitivity to flashing light,
+    which is most provocative at roughly 15-20 flashes per second.  That is a
+    visual effect.  It does not carry over to sound.
 
-    Auditory stimulation at this frequency carries a lower but non-zero risk
-    of overstimulation.
+    FORMAT CORRECTION: the previous version played a raw 15 Hz sine wave.
+    15 Hz is infrasonic: headphones and laptop speakers barely reproduce it,
+    and at audible levels it is felt rather than heard.  The BWR Manual's
+    "mono = speakers" intent is served by a monaural beat: both tones mixed
+    into each channel, so the 15 Hz beat physically exists in the sound and
+    is audible on any speaker (Chaieb et al. 2015).
 
-    NOTE: 15 Hz binaural beats were used in Malandrone et al. (2022) pilot
-    RCT for ADHD with positive subjective studying-performance results.  That
-    specific protocol (415/400 Hz binaural beat) is available in the Attention
-    & Cognition suite.  This mono preset is for reference completeness only.
-
-    Delivery: mono tone.  No therapeutic use recommended.""",
+    Delivery: monaural beat, 400 + 415 Hz in both channels.
+    Speakers or headphones.""",
     ),
-    dict(
-        label    = "Low Beta  16 Hz  --  Focused attention / logical reasoning",
+    preset(
+        label    = "Low Beta  16 Hz  --  Vigilance / sustained attention (Lane 1998)",
         mode     = "binaural", beat_hz=16.0, carrier_hz=400.0,
-        duty     = 0.5, band="beta", evidence="Inconclusive",
-        timing   = "before_and_during",
+        evidence = "Inconclusive (EEG) / Limited (behaviour)",
+        timing   = "during", ref_s=1800, ref_src="Lane 1998",
+        noise    = "pink", noise_lvl=DEFAULT_NOISE_LVL,
         desc     = """\
-    Low beta (13-20 Hz) correlated with sustained attention and working memory.
-    Lane et al. (1998): beta BB improved vigilance vs theta BB.
-    CAUTION: zero of 14 peer-reviewed EEG studies (Ingendoh 2023) found
-    reliable beta entrainment via binaural beats.  Headphones required.
-    Evidence: Inconclusive (for entrainment); Moderate (behavioural effects).""",
+    Lane et al. (1998): 16/24 Hz beats in pink noise, played DURING a 30-min
+    vigilance task, gave more correct detections, fewer false alarms and
+    less negative mood than 1.5/4 Hz beats.  No beta-band EEG study found
+    beta entrainment (Ingendoh 2023).  Headphones required.
+    Evidence: Inconclusive (EEG) / Limited (behaviour).""",
         detail   = """\
-    The beta band (13-30 Hz) is associated with focused attention, logical
-    reasoning, and deliberate information processing via frontoparietal networks.
+    The beta band (13-30 Hz) accompanies focused attention and deliberate
+    information processing.
 
-    Lane et al. (1998) found beta BB (16 and 24 Hz) improved performance on a
-    vigilance task and produced less negative mood compared to theta/delta BB.
-    This is included in the Garcia-Argibay (2018) meta-analysis which found a
-    significant overall effect (g = 0.45) for cognitive outcomes including attention.
+    BEHAVIOUR
+      Lane et al. (1998), n = 29, crossover: beta beats (16 and 24 Hz) in pink
+        noise during a 30-min visual vigilance task beat theta/delta beats
+        (1.5 and 4 Hz) on hits, false alarms and mood.  The comparison was
+        theta/delta beats, not silence.
+      A 4-min study of 7 and 16 Hz beats found no vigilance effect (Chaieb
+        et al. 2015).
 
-    IMPORTANT LIMITATION: Zero of 14 peer-reviewed EEG studies found reliable
-    beta-band entrainment via binaural beats (Ingendoh et al. 2023 systematic
-    review, PLoS ONE 18(5): e0286023).  Behavioural effects may occur via
-    mechanisms other than EEG entrainment (e.g., norepinephrine modulation
-    per Hommel et al. 2016).
+    EEG: none of the beta-band studies in Ingendoh et al. (2023) found beta
+    entrainment (Gao 2014; Vernon 2014; Lopez-Caballero 2017; Crespo 2013;
+    Corona-Gonzalez 2021).  Goodin et al. (2012) found no spectral change for
+    16 Hz beats.  Behavioural effects, where present, may work through
+    another mechanism, such as noradrenergic arousal (Hommel et al. 2016).
 
-    Delivery: binaural beat.  Headphones required.
-    Research minimum: 10 minutes.  Evidence: Inconclusive (entrainment).""",
+    Delivery: binaural beat, 400 Hz carrier (Lane's carriers are not given in
+    the provided documents), pink noise as in Lane.  Headphones required.
+    Studied exposure: 30 min, during the task.""",
     ),
-    dict(
+    preset(
         label    = "High Beta  25 Hz  --  Heightened arousal  (caution)",
         mode     = "binaural", beat_hz=25.0, carrier_hz=400.0,
-        duty     = 0.5, band="beta", evidence="Inconclusive",
-        timing   = "during",
+        evidence = "Inconclusive",
         desc     = """\
-    High beta (20-30 Hz) associated with heightened cortical arousal.
-    In excess or in stress-prone individuals, correlates with anxiety,
-    rumination and overstimulation.  Not recommended for individuals
-    prone to anxiety.  Zero EEG studies confirm entrainment at this band.
-    Evidence: Inconclusive.""",
+    High-beta (20-30 Hz) EEG accompanies heightened arousal and, in excess,
+    anxiety.  That is a correlation, not evidence that 25 Hz beats cause
+    anxiety.  Lane (1998) included 24 Hz in its beneficial beta condition.
+    No EEG entrainment shown at this band.  Headphones required.""",
         detail   = """\
-    High beta oscillations (20-30 Hz) are associated with heightened cortical
-    arousal and activation.  In excess or in stress-prone individuals, high beta
-    correlates with anxiety, rumination and overstimulation.
+    High-beta oscillations (20-30 Hz) accompany heightened cortical arousal.
+    In stress-prone people, excess high beta correlates with anxiety and
+    rumination.  That association runs from mental state to EEG and does not
+    show that a 25 Hz beat induces anxiety.
 
-    IMPORTANT LIMITATION: Zero of 14 peer-reviewed EEG studies found reliable
-    beta-band entrainment via binaural beats (Ingendoh et al. 2023).
+    Lane et al. (1998) used 16 and 24 Hz beats together as its beta
+    condition, which improved vigilance and mood relative to theta/delta.
+    No study in the provided documents found beta-band EEG entrainment
+    (Ingendoh et al. 2023).
 
-    This preset is included for completeness of the beta band coverage.
-    It has no recommended therapeutic application.
-
-    Delivery: binaural beat.  Headphones required.  No established minimum.
+    Delivery: binaural beat, 400 Hz carrier.  Headphones required.
     Evidence: Inconclusive.""",
     ),
-    dict(
-        label    = "Gamma  40 Hz  --  High cognition / neural coordination",
-        mode     = "isochronic", beat_hz=40.0, carrier_hz=200.0,
-        duty     = 0.5, band="gamma", evidence="Moderate",
-        timing   = "before_and_during",
+    preset(
+        label    = "Gamma  40 Hz  --  Gamma-band response (Jirakittayakorn 2017)",
+        mode     = "binaural", beat_hz=40.0, carrier_hz=250.0,
+        evidence = "Mixed (EEG)",
+        timing   = "before_and_during", ref_s=900, pre_s=900,
+        ref_src  = "Jirakittayakorn & Wongsawat 2017 (Int J Psychophysiol)",
         desc     = """\
-    Correlated with high-level information processing and distributed neural
-    coordination.  40 Hz isochronic used here because 40 Hz exceeds the
-    ~30 Hz binaural perception limit.  EEG confirmed in temporal/frontal/
-    central regions after 15 min.  Speakers or headphones.
-    Research minimum: 15 min.  Evidence: Moderate.""",
+    Jirakittayakorn & Wongsawat (2017, Int J Psychophysiol): a 40 Hz beat on
+    a 250 Hz carrier raised gamma power over temporal, frontal and central
+    sites after 15 min of a 30-min session.  Engelbregt 2021 and
+    Lopez-Caballero 2017 found no gamma increase.  Headphones required.
+    Evidence: Mixed (EEG).  Attention studies: Attention & Cognition suite.""",
         detail   = """\
-    Gamma oscillations (40-70 Hz) are correlated with high-level information
-    processing, cross-regional neural coordination, perceptual binding, working
-    memory maintenance and executive function.  Gamma deficits are documented
-    in Alzheimer's disease and schizophrenia.
+    Gamma oscillations (30-80 Hz) are linked to perceptual binding, working
+    memory and cross-regional coordination.  Gamma deficits are documented in
+    Alzheimer's disease and schizophrenia.
 
-    40 Hz isochronic is used because this frequency exceeds the approximately
-    30 Hz binaural beat perception threshold (Perrott & Nelson 1969).
+    EEG EVIDENCE
+      For:     Jirakittayakorn & Wongsawat (2017, Int J Psychophysiol), n = 47:
+               40 Hz beat, 250 Hz carrier, 30 min; gamma rose over temporal,
+               frontal and central regions from 15 min.  Schwarz & Taylor
+               (2005) and Draganova (2008) measured 40 Hz steady-state
+               responses (ASSR) to 40 Hz binaural beats.
+      Against: Engelbregt et al. (2021, 440/480 Hz) and Lopez-Caballero &
+               Escera (2017) found no gamma power increase.
 
-    EEG confirmation: gamma power increase in temporal, frontal and central
-    regions after 15 minutes of stimulation.
-    Source: Jirakittayakorn & Wongsawat (2017b), Int J Psychophysiology.
+    CORRECTION: the previous version played this as an isochronic tone
+    because "40 Hz exceeds the ~30 Hz binaural limit", while citing EEG
+    results that came from binaural beats.  Perrott & Nelson (1969) put the
+    limit for HEARING a binaural beat near 30 Hz (Licklider 1950: ~35 Hz).
+    That is not a limit on brain responses.  40 Hz binaural beats evoke
+    measurable responses (Schwarz & Taylor 2005; Orozco Perez 2020), and
+    every gamma study cited in this tool used binaural delivery.
 
-    Engelbregt et al. (2021) demonstrated that 40 Hz binaural beats (440/480 Hz)
-    improved Flanker task performance (fewer errors) vs pink noise and monaural
-    beats, with large effect sizes.  That binaural variant is in the Attention
-    & Cognition suite.
-
-    Delivery: isochronic tone at 200 Hz carrier.  Speakers or headphones.
-    Research minimum: 15 minutes.  Evidence: Moderate.""",
+    Delivery: binaural beat, 250 Hz carrier (Jirakittayakorn & Wongsawat).
+    Headphones required.  Studied exposure: 15 min (effect onset).""",
     ),
 ]
 
 SUITE_ATTENTION = [
-    dict(
+    preset(
         label    = "40 Hz Attention BB  --  Engelbregt 2021 (440/480 Hz binaural)",
         mode     = "binaural", beat_hz=40.0, carrier_hz=440.0,
-        duty     = 0.5, band="gamma", evidence="Moderate",
-        timing   = "during",
+        evidence = "Moderate (single crossover study, n = 24)",
+        timing   = "during", ref_s=300, ref_src="Engelbregt 2021",
         desc     = """\
-    Replicates the exact parameters from Engelbregt et al. (2021), Experimental
-    Brain Research.  Left ear: 440 Hz; Right ear: 480 Hz = perceived 40 Hz beat.
-    Reduced Flanker task errors vs pink noise (η²=0.142) with LARGE effect size.
-    Monaural beats at same frequencies INCREASED errors — mode matters.
-    Headphones required.  Session: 5+ min concurrent with task.  Evidence: Moderate.""",
+    Engelbregt et al. (2021): a 40 Hz binaural beat (440 Hz one ear, 480 Hz
+    the other) played for 5 min DURING an Eriksen Flanker task produced fewer
+    errors than pink noise or monaural beats.  Reaction time did not change.
+    Monaural beats at the same tones INCREASED errors.  Headphones required.
+    Evidence: Moderate (single crossover study, n = 24).""",
         detail   = """\
     Source: Engelbregt H, Barmentlo M, Keeser D, Pogarell O, Deijen JB (2021).
     Effects of binaural and monaural beat stimulation on attention and EEG.
-    Experimental Brain Research 239:2781-2791. doi:10.1007/s00221-021-06155-z
+    Experimental Brain Research 239:2781-2791.  doi:10.1007/s00221-021-06155-z
 
-    STUDY DESIGN: 25 first-year psychology students performed the Eriksen Flanker
-    task (3 series of 60 trials) DURING 5-minute presentation of pink noise (PN),
-    monaural beats (MB) or binaural beats (BB).  Conditions were counterbalanced
-    (within-subject crossover).  EEG was recorded throughout.
+    DESIGN: 25 psychology students (24 analysed), within-subject crossover.
+    Pink noise (PN), monaural beats (MB) and binaural beats (BB), 5 min each
+    in random order, while performing the Flanker task, with EEG recorded.
+    BB: 440 Hz in one ear and 480 Hz in the other (this tool: L 440, R 480).
+    MB: both tones in both ears.
 
-    EXACT PARAMETERS: Left ear 440 Hz + right ear 480 Hz = perceived 40 Hz BB.
-    Same frequencies presented to both ears simultaneously for MB condition.
+    RESULTS (Flanker false responses; one-tailed tests)
+      BB < PN : F(1,21) = 3.486,  p = .038, partial eta^2 = .142
+      MB > PN : F(1,21) = 18.711, p < .001, partial eta^2 = .471
+      BB < MB : t(23) = 1.78,     p = .044, partial eta^2 = .122
+      Reaction time: no difference between conditions.
 
-    KEY RESULTS (Flanker false responses):
-      BB  < PN:  F(1,21)=3.486, p=0.038, η²=0.142  — BB improved accuracy
-      MB  > PN:  F(1,21)=18.711, p<0.001, η²=0.471 — MB impaired accuracy
-      BB  < MB:  t(23)=1.78, p=0.044 — BB clearly superior to MB
+    EEG: no consistent 40 or 45 Hz power increase with BB.  The only 40 Hz
+    increase (electrode Fz) occurred with MONAURAL beats.  BB showed higher
+    45 Hz power than MB at T5 only.  The authors attribute the attention
+    benefit to something other than entrainment, possibly noradrenergic
+    dynamics (Hommel et al. 2016).
 
-    EEG FINDINGS: No consistent 40/45 Hz power increase was found.  The authors
-    conclude the cognitive enhancement is likely not mediated by neural entrainment
-    but possibly by norepinephrine/glutamate dynamics (Hommel et al. 2016).
+    LIMITATIONS: small student sample; 5-min exposure, which the authors
+    call too short; 440/480 Hz lies above the 100-400 Hz range in which
+    binaural beats are best perceived (Licklider et al. 1950).
 
-    IMPORTANT: Mode matters critically.  Do not substitute monaural beats for
-    binaural beats — the two have opposite effects on attention accuracy.
-
-    TIMING: In this study the task was performed DURING audio exposure.  Use
-    standard continuous playback while performing cognitive work.
-
-    Delivery: binaural beat.  Headphones required.
-    Recommended session: 5-30 minutes concurrent with task.
-    Evidence: Moderate (single well-controlled crossover study, n=24).""",
+    Delivery: binaural beat.  Headphones required.  Mode matters: do not
+    substitute monaural beats.  Studied exposure: 5 min, during the task.""",
     ),
-    dict(
+    preset(
         label    = "15 Hz ADHD Focus BB  --  Malandrone 2022 (400/415 Hz binaural)",
         mode     = "binaural", beat_hz=15.0, carrier_hz=400.0,
-        duty     = 0.5, band="beta", evidence="Limited",
-        timing   = "before_and_during",
+        evidence = "Limited (pilot RCT, conference abstract)",
+        timing   = "during",
         desc     = """\
-    From Malandrone et al. (2022) pilot add-on RCT, European Psychiatry congress.
-    Adult ADHD outpatients: 400 Hz (left) / 415 Hz (right) = 15 Hz beat.
-    Significant improvement in subjective studying performance vs placebo
-    (mean diff=2.7, p<0.001).  No significant change in ADHD-RS or SART.
-    Self-administered during individual study sessions.  Min: 10 min.
-    Evidence: Limited (pilot, small sample, conference proceedings).""",
+    Malandrone et al. (2022) pilot RCT, adult ADHD: 400 Hz left / 415 Hz
+    right during self-directed study sessions.  Subjective study performance
+    improved in the beat group only, with a between-group difference at the
+    last visit.  ADHD-RS, mind-wandering and SART did not change.
+    Headphones required.  Evidence: Limited.""",
         detail   = """\
     Source: Malandrone F, Spadotto M, Boero M, Bracco IF, Oliva F (2022).
-    A pilot add-on Randomized-Controlled Trial evaluating the effect of binaural
-    beats on study performance, mind-wandering, and core symptoms of adult ADHD.
-    European Psychiatry 65(Suppl1):S274. doi:10.1192/j.eurpsy.2022.701
+    A pilot add-on randomized-controlled trial evaluating the effect of
+    binaural beats on study performance, mind-wandering, and core symptoms
+    of adult ADHD patients.  European Psychiatry 65(S1):S274, EPP0446.
+    doi:10.1192/j.eurpsy.2022.701
 
-    STUDY DESIGN: University students with pharmacologically treated adult ADHD
-    in a two-group RCT.  Intervention: 15 Hz BB (415 Hz right ear, 400 Hz left
-    ear).  Placebo: identical track with two identical 400 Hz tones (no beat).
-    Baseline (T0) + two fortnightly follow-ups (T1, T2).
+    DESIGN: university students on medication for adult ADHD.  Intervention:
+    15 Hz beat (415 Hz right ear, 400 Hz left ear).  Placebo: the same track
+    with 400 Hz in both ears (no beat).  Baseline plus two fortnightly
+    follow-ups.  Self-administered during individual study sessions.
 
-    OUTCOME MEASURES:
-      ADHD-RS-5 (rating scale) — no significant change
-      MEWS (mind-wandering scale) — no significant change
-      SART (sustained attention) — no significant change
-      SSP (subjective studying performance) — SIGNIFICANT improvement in BB group
-        only: mean difference = 2.7, p < 0.001; between-group contrast at T3.
+    RESULTS
+      Subjective studying performance (SSP): improved from baseline to last
+        observation in the beat group only (mean difference 2.7, p < .001);
+        significant between-group difference at the last observation.
+      ADHD-RS-5, MEWS (mind-wandering), SART (sustained attention): no
+        significant change.
 
-    INTERPRETATION: The improvement was in subjective study experience rather than
-    objective attention metrics.  This may reflect reduced discomfort, anxiety or
-    effort perception during studying rather than direct attentional enhancement.
-    Chaieb et al. (2015) note that ADHD binaural beat research showed participants
-    reported subjectively fewer inattention problems despite no objective change.
+    INTERPRETATION: the gain was in self-rated study experience, not in
+    objective attention.  Kennel et al. (2010) saw the same pattern in
+    children with ADHD: subjectively fewer problems, no objective change
+    (Chaieb et al. 2015).  Session length was not reported.
 
-    SELF-ADMINISTRATION: Participants used this during their own study sessions.
-    Recommend playing continuously while working or studying.
+    LIMITATIONS: pilot, conference abstract, small sample, no EEG,
+    medication confound.
 
-    LIMITATIONS: Pilot study; conference proceedings; small sample; no EEG
-    measurement; pharmacological treatment confound.
-
-    Delivery: binaural beat.  Headphones required.
-    Recommended: played during self-directed study or focused work.
-    Research minimum: 10 minutes.  Evidence: Limited.""",
+    Delivery: binaural beat.  Headphones required.  Play during study.""",
     ),
-    dict(
-        label    = "Alpha  9.55 Hz  --  Working memory (Kraus & Porubanová 2015)",
+    preset(
+        label    = "Alpha  9.55 Hz  --  Working memory (Kraus & Porubanova 2015)",
         mode     = "binaural", beat_hz=9.55, carrier_hz=400.0,
-        duty     = 0.5, band="alpha", evidence="Moderate",
-        timing   = "before",
+        evidence = "Moderate (single study)",
+        timing   = "before", ref_s=720, ref_src="Kraus & Porubanova 2015",
+        noise    = "pink", noise_lvl=DEFAULT_NOISE_LVL,
         desc     = """\
-    Kraus & Porubanová (2015): alpha BB improved working memory capacity on
-    automated OSPAN task.  12 min exposure before task.  Sea-sound masking used.
-    Garcia-Argibay (2018) meta-analysis: exposure BEFORE task yields larger
-    effects than during-only.  Use the pre-task induction timer option.
-    Headphones required.  Induction: 12 min.  Evidence: Moderate.""",
+    Kraus & Porubanova (2015): 9.55 Hz alpha beats in pink noise for 12 min
+    BEFORE an automated OSPAN task improved working-memory capacity compared
+    with a sea-sounds control (g = 0.68).  Use the pre-task induction option.
+    Headphones required.  Evidence: Moderate (single study).""",
         detail   = """\
-    Source: Kraus J & Porubanová M (2015). The effect of binaural beats on
+    Source: Kraus J, Porubanova M (2015).  The effect of binaural beats on
     working memory capacity.  Studia Psychologica 57(2):135.
-    Also cited in Garcia-Argibay et al. (2018) meta-analysis (Table 1, ID 22,
-    g = 0.681).
+    Garcia-Argibay et al. (2018) meta-analysis, Table 1 ID 22: g = 0.681.
 
-    STUDY DESIGN: 20 participants per group; alpha BB at 9.55 Hz during 12
-    minutes of OSPAN (Automated Operation Span Task) performance.  Sea-sound
-    background masking used.  Working memory measured as correctly recalled items.
+    DESIGN (Garcia-Argibay 2018, Tables 1-2): RCT, 20 per group; 12 min of
+    alpha beats masked with pink noise BEFORE the automated operation-span
+    (OSPAN) task.  Control group: sea sounds.  The 9.55 Hz figure is from
+    Engelbregt et al. (2021).
 
-    RESULT: Significant improvement in working memory capacity in the BB group
-    compared to control.
+    CORRECTION: the previous version said the study used sea-sound masking
+    DURING the task.  Sea sounds were the control condition, the beats were
+    masked with pink noise, and exposure came before the task.
 
-    TIMING NOTE: Garcia-Argibay et al. (2018) meta-regression found that exposure
-    BEFORE the task (b=0.46, p=0.006) and BEFORE+DURING (b=0.53, p=0.002) both
-    produced significantly larger effects than during-task-only exposure.
+    TIMING: Garcia-Argibay et al. (2018) meta-regression found larger effects
+    for exposure before (b = 0.46, p = .006) or before and during (b = 0.53,
+    p = .002) the task than for exposure during it only.
 
-    MASKING: The original study used sea-sound background.  Pink noise masking
-    (available as an option at startup) is the closest validated equivalent.
-    Garcia-Argibay found pink noise masking does not reduce effectiveness.
-
-    Delivery: binaural beat at 400 Hz carrier.  Headphones required.
-    Recommended: 12 min induction before beginning memory/study tasks.
-    Evidence: Moderate (single study; included in meta-analysis).""",
+    Delivery: binaural beat, 400 Hz carrier (the original carrier is not
+    given in the provided documents), pink noise.  Headphones required.
+    Studied exposure: 12 min, then begin the task.""",
     ),
-    dict(
-        label    = "Beta  13 Hz  --  Memory encoding (Garcia-Argibay 2017)",
-        mode     = "binaural", beat_hz=13.0, carrier_hz=400.0,
-        duty     = 0.5, band="beta", evidence="Moderate",
-        timing   = "before_and_during",
+    preset(
+        label    = "Beta  20 Hz  --  Long-term memory encoding (Garcia-Argibay 2017)",
+        mode     = "binaural", beat_hz=20.0, carrier_hz=400.0,
+        evidence = "Moderate (single RCT, n = 32)",
+        timing   = "before_and_during", ref_s=1020, ref_src="Garcia-Argibay 2017", pre_s=300,
         desc     = """\
-    Beta BB during encoding phase improves free recall and recognition (d'index).
-    Garcia-Argibay et al. (2017): 17 min BB before+during encoding.  g=0.907 for
-    free recall, g=1.501 for recognition sensitivity.  Best with white/pink noise.
-    Garcia-Argibay 2018 meta-analysis: before+during > during-only.
-    Headphones required.  Recommended: 17 min before+during encoding.
-    Evidence: Moderate.""",
+    Garcia-Argibay et al. (2017): unmasked 20 Hz beta beats for 17 min,
+    before and during word-list encoding, improved free recall and
+    recognition sensitivity (d') compared with white noise.  5 Hz theta beats
+    made both worse.  Headphones required.
+    Evidence: Moderate (single RCT, n = 32).""",
         detail   = """\
-    Source: Garcia-Argibay M, Santed MA, Reales JM (2017). Binaural auditory beats
-    affect long-term memory.  Psychological Research (advance online publication).
-    doi:10.1007/s00426-017-0959-2
-    Also in Garcia-Argibay et al. (2018) meta-analysis Table 1, IDs 13-16.
+    Source: Garcia-Argibay M, Santed MA, Reales JM (2019).  Binaural auditory
+    beats affect long-term memory.  Psychological Research 83:1124-1136
+    (online 2017).  doi:10.1007/s00426-017-0959-2
+    Garcia-Argibay et al. (2018) meta-analysis, Table 1 IDs 13-16.
 
-    STUDY DESIGN: 32 participants; 17-minute beta BB (white noise masked) during
-    the encoding phase of a free recall and recognition memory task.
+    DESIGN: 32 participants; 20 Hz (beta) or 5 Hz (theta) binaural beats, or
+    white noise as the control, for 17 min before and during encoding,
+    followed by free recall and recognition tests.
 
-    RESULTS (Hedges' g):
-      Beta BB — free recall:        g = 0.907
-      Beta BB — recognition (d'):   g = 1.501
-      Theta BB — free recall:       g = -0.819  (theta IMPAIRED recall)
-      Theta BB — recognition:       g = -0.526  (theta IMPAIRED recognition)
+    RESULTS (Hedges' g vs white noise)
+      Beta:  g = 0.91 and 1.50   (free recall and recognition d')
+      Theta: g = -0.82 and -0.53 (theta IMPAIRED both)
+      The meta-analysis tables do not unambiguously match each g to a task.
+    The direction of the effect depends on the beat frequency.
 
-    CRITICAL FINDING: Beta improves memory encoding; theta impairs it.
-    Direction of effect depends critically on the frequency chosen.
+    CORRECTIONS: the previous version used a 13 Hz beat and said the beats
+    were masked with white noise.  The study used 20 Hz.  White noise was
+    the control condition, and the beats were unmasked (Garcia-Argibay 2018,
+    Table 2).
 
-    TIMING: 17 minutes before and during the encoding phase (not the recall phase).
-    Use pre-task induction timer: set 5 min pre-task, then continuous during study.
+    CONTEXT: the memory subgroup of the meta-analysis was the weakest and
+    most heterogeneous, g = 0.26 [0.02, 0.50], I^2 = 69%.
 
-    MASKING: White noise used in original study.  Pink noise masking (available
-    at startup) is an acceptable equivalent per Garcia-Argibay 2018.
-
-    Delivery: binaural beat.  Headphones required.
-    Recommended: 17 min beginning before and continuing during encoding.
-    Evidence: Moderate (single RCT, large effect; included in meta-analysis).""",
+    Delivery: binaural beat, 400 Hz carrier (the carrier is not given in the
+    provided documents).  Headphones required.
+    Studied exposure: 17 min, starting before and continuing during study.""",
     ),
-    dict(
-        label    = "Gamma  40 Hz  --  Attentional focus (Colzato 2017, global-local)",
-        mode     = "isochronic", beat_hz=40.0, carrier_hz=200.0,
-        duty     = 0.5, band="gamma", evidence="Moderate",
-        timing   = "before_and_during",
+    preset(
+        label    = "Gamma  40 Hz  --  Attentional focus (Colzato 2017, 340 Hz carrier)",
+        mode     = "binaural", beat_hz=40.0, carrier_hz=340.0,
+        evidence = "Moderate (attention subgroup g = 0.58)",
+        timing   = "before_and_during", ref_s=180, ref_src="Colzato 2017", pre_s=180,
+        noise    = "white", noise_lvl=DEFAULT_NOISE_LVL,
         desc     = """\
-    Colzato et al. (2017): 3 min gamma BB before+during global-local task
-    produced more attentional focus (reduced global precedence effect).
-    Garcia-Argibay meta: attention g=0.694 for Colzato; g=0.666 for Hommel 2016.
-    PROTOCOL DEVIATION: original studies used binaural beats; this preset uses
-    isochronic because 40 Hz exceeds the ~30 Hz binaural perception limit.
-    Binaural and isochronic activate different neural pathways (Chaieb 2015).
-    Speakers or headphones.  Recommended: 3-10 min induction.
-    Research minimum: 15 min.  Evidence: Moderate.""",
+    Colzato et al. (2017): 40 Hz binaural beats on a 340 Hz carrier, in white
+    noise, for 3 min before and during a global-local task produced a
+    narrower attentional focus than a constant 340 Hz tone (g = 0.69).
+    Hommel (2016) and Reedijk (2015) used the same carrier.
+    Headphones required.  Evidence: Moderate.""",
         detail   = """\
     Sources:
-    Colzato LS, Barone H, Sellaro R, Hommel B (2017). More attentional focusing
-    through binaural beats: evidence from the global-local task.  Psychological
-    Research 81:271-277.  doi:10.1007/s00426-015-0727-0
-    Hommel B, Sellaro R, Fischer R, Borg S, Colzato LS (2016). High-frequency
-    binaural beats increase cognitive flexibility.  Frontiers in Psychology 7:1287.
-    Garcia-Argibay et al. (2018) meta-analysis, attention subgroup: g = 0.58
-    [0.34, 0.83], zero heterogeneity, p < 0.001.
+    Colzato LS, Barone H, Sellaro R, Hommel B (2017).  More attentional
+      focusing through binaural beats: evidence from the global-local task.
+      Psychological Research 81:271-277.  doi:10.1007/s00426-015-0727-0
+    Hommel B, Sellaro R, Fischer R, Borg S, Colzato LS (2016).  High-frequency
+      binaural beats increase cognitive flexibility.  Front Psychol 7:1287.
+    Reedijk SA, Bolders A, Colzato LS, Hommel B (2015).  Eliminating the
+      attentional blink through binaural beats.  Front Psychiatry 6:82.
 
-    COLZATO 2017 DESIGN: 36 healthy adults; gamma BB (white noise, 3 min) before
-    and during a global-local task.  Compared to constant 340 Hz tone control.
-    Result: gamma BB produced more focused attentional style (less global
-    precedence); g = 0.694.
+    COLZATO 2017: 36 healthy adults.  40 Hz beats "based on a 340 Hz carrier
+    tone", embedded in white noise, for 3 min before and during the task.
+    Control: constant 340 Hz tone.  The global-precedence effect shrank
+    (g = 0.69).  HOMMEL 2016: 40 Hz beats increased cognitive flexibility
+    (g = 0.67).  REEDIJK 2015: 40 Hz beats eliminated the attentional blink
+    (g = 0.83), but only in people with low spontaneous eye-blink rates.
 
-    HOMMEL 2016: Gamma BB promoted cognitive flexibility (distributed parallel
-    processing style); g = 0.666.
+    Garcia-Argibay et al. (2018), attention subgroup: g = 0.58 [0.34, 0.83],
+    I^2 = 0%.
 
-    NOTE: Colzato found narrowed attention; Hommel found increased flexibility.
-    These findings appear contradictory but may reflect different task demands.
-    Both show gamma BB modulates attentional style.
+    CORRECTION: the previous version substituted an isochronic tone on a
+    200 Hz carrier.  This preset now replicates the published stimulus:
+    binaural, 340 Hz carrier, white-noise background.
 
-    IMPORTANT — PROTOCOL DEVIATION: Both Colzato 2017 and Hommel 2016 used
-    binaural beats (340 Hz carrier + white noise masking).  This preset
-    substitutes isochronic AM because 40 Hz exceeds the ~30 Hz binaural
-    perception limit (Perrott & Nelson 1969; Ingendoh et al. 2023).  Binaural
-    beats are processed centrally in the superior olivary nucleus, whereas
-    isochronic tones are demodulated peripherally in the cochlea (Chaieb 2015).
-    The attentional effects observed in the original studies were demonstrated
-    with binaural delivery specifically; it is unknown whether isochronic
-    delivery at 40 Hz produces equivalent cognitive outcomes.  For the closest
-    possible replication use the "40 Hz Attention BB (440/480 Hz)" binaural
-    preset from the Attention suite, which was validated in Engelbregt et al.
-    (2021) with an auditory ASSR confirmed at 440/480 Hz.
-
-    Delivery: isochronic tone at 200 Hz carrier (modified from original binaural
-    protocol).  Speakers or headphones.
-    Recommended: 3+ min before, then during cognitive task.
-    Research minimum: 15 minutes.  Evidence: Moderate.""",
+    Delivery: binaural beat, L 340 Hz / R 380 Hz, white noise.
+    Headphones required.  Studied exposure: 3 min before, then during task.""",
     ),
 ]
 
 SUITE_MINDWAR = [
-    dict(
-        label    = "Delta  2 Hz  --  Deep sleep / cognitive suppression",
+    preset(
+        label    = "Delta  2 Hz  --  BWR Manual: 'exhausting' delta environment",
         mode     = "binaural", beat_hz=2.0, carrier_hz=400.0,
-        duty     = 0.5, band="delta", evidence="Limited",
-        timing   = "during",
+        evidence = "Limited",
         desc     = """\
-    MindWar characterisation: "1-3 Hz, characteristic of deep sleep."
-    Aquino describes delta BWR as making complex or creative effort
-    "exhausting and fruitless."  Consistent with standard neuroscience.
-    Headphones required.  Research minimum: 20 minutes.  Evidence: Limited.""",
+    BWR Manual: in a delta (1-4 Hz) environment, complex or creative work is
+    "exhausting and unproductive".  Closest research: 1.5/4 Hz beats during
+    a vigilance task worsened performance and mood vs 16/24 Hz (Lane 1998).
+    Headphones required.  Evidence: Limited.""",
         detail   = """\
-    Source: Valley PE & Aquino MA (1980). From PSYOP to MindWar: The Psychology
-    of Victory. HQ 7th Psychological Operations Group, USAR.  Introduction and
-    annotations: Aquino MA (2003).  Chapter 3, PSYCON #2: Brainwave Resonance.
+    SOURCE CHECK: the BWR Manual attributes its band descriptions to Michael
+    Aquino's MindWar.  The provided MindWar text (Valley & Aquino 1980, with
+    Aquino's 2003 annotations) contains no band-by-band descriptions.  Its
+    only related passage is footnote 21 (see the infrasonic presets).
 
-    MindWar characterisation: "1-3 Hz = delta waves, characteristic of deep
-    sleep."  Aquino describes the operational use of delta BWR as suppressing
-    beta activity in a target population, making anything complex or creative
-    "exhausting and fruitless."
+    RESEARCH VIEW: delta is the dominant rhythm of deep sleep and does not
+    support waking cognition.  Lane et al. (1998) found 1.5/4 Hz beats during
+    a 30-min vigilance task gave fewer hits, more false alarms and more
+    negative mood than 16/24 Hz beats.  Delta beats heard BEFORE a stressful
+    event reduced anxiety (Wahbeh 2007b; Padmanabhan 2005).
 
-    This characterisation is consistent with standard neuroscience.  Delta is
-    the dominant oscillatory pattern during NREM stage 3 sleep and is not
-    associated with productive waking cognition.
-
-    Delivery: binaural beat.  Headphones required.
-    Research minimum: 20 minutes.  Evidence: Limited.""",
+    Delivery: binaural beat, 400 Hz carrier.  Headphones required.""",
     ),
-    dict(
-        label    = "Theta  5.5 Hz  --  Emotional arousal / frustration",
+    preset(
+        label    = "Theta  5.5 Hz  --  BWR Manual: 'emotion / frustration'",
         mode     = "binaural", beat_hz=5.5, carrier_hz=400.0,
-        duty     = 0.5, band="theta", evidence="Limited",
-        timing   = "during",
+        evidence = "Claim contradicted",
         desc     = """\
-    MindWar characterisation: "4-7 Hz, characteristic of high emotion,
-    violence and frustration."  This diverges from mainstream research,
-    which associates theta with relaxation and meditative states.
-    Headphones required.  Research minimum: 10 minutes.  Evidence: Limited.""",
+    BWR Manual: 4-7 Hz "heightens emotions, imagination and frustration".
+    Research mostly contradicts this: theta beats REDUCED anxiety (Isik
+    2017; Garcia-Argibay 2018), though 30 min of 7 Hz beats raised one
+    depression subscale (Wahbeh 2007a).  Headphones required.""",
         detail   = """\
-    Source: Valley PE & Aquino MA (1980). From PSYOP to MindWar: The Psychology
-    of Victory. HQ 7th Psychological Operations Group, USAR.  Introduction and
-    annotations: Aquino MA (2003).  Chapter 3, PSYCON #2.
+    SOURCE CHECK: the "high emotion, violence and frustration" description is
+    not in the provided MindWar text (Valley & Aquino 1980 / Aquino 2003).
 
-    MindWar characterisation: "4-7 Hz = theta waves, characteristic of high
-    emotion, violence and frustration."  In Aquino's framework, theta BWR
-    is used to promote emotional volatility and impair rational decision-making
-    in a target population.
+    RESEARCH VIEW
+      Isik et al. (2017): 10 min of theta beats reduced pre-operative anxiety.
+      Garcia-Argibay et al. (2018): anxiety subgroup g = 0.69.
+      Wahbeh et al. (2007a): one 30-min session of 7 Hz beats raised the POMS
+        depression subscale and lowered verbal recall (Chaieb et al. 2015).
+      Garcia-Argibay et al. (2017): 5 Hz beats impaired memory encoding.
 
-    DIVERGES FROM CONSENSUS: This framing conflicts with mainstream peer-reviewed
-    EEG literature, which primarily associates theta with relaxation, memory
-    consolidation and meditative states.  Garcia-Argibay et al. (2017) found
-    theta BB actually IMPAIRED memory encoding (g = -0.819).
-
-    Delivery: binaural beat.  Headphones required.
-    Research minimum: 10 minutes.  Evidence: Limited.""",
+    Delivery: binaural beat, 400 Hz carrier.  Headphones required.""",
     ),
-    dict(
-        label    = "Alpha  10 Hz  --  Relaxed / cooperative state",
+    preset(
+        label    = "Alpha  10 Hz  --  BWR Manual: 'relaxed, cooperative' state",
         mode     = "binaural", beat_hz=10.0, carrier_hz=400.0,
-        duty     = 0.5, band="alpha", evidence="Moderate",
-        timing   = "during",
+        evidence = "Mixed (EEG) / Limited (anxiety)",
         desc     = """\
-    MindWar characterisation: "8-12 Hz, characteristic of meditation,
-    relaxation and searching for patterns."  Aquino describes alpha BWR
-    as enabling "relaxed, pleasant, cooperative discussion."  Consistent
-    with mainstream EEG literature.  Headphones required.  Min: 10 minutes.
-    Evidence: Moderate.""",
+    BWR Manual: alpha (8-12 Hz) supports "relaxed, cooperative conversation"
+    and pattern recognition.  Research links alpha to relaxed wakefulness, and
+    10 Hz beats lowered anxiety (Weiland 2011).  No study tested cooperation.
+    Headphones required.""",
         detail   = """\
-    Source: Valley PE & Aquino MA (1980). From PSYOP to MindWar: The Psychology
-    of Victory. HQ 7th Psychological Operations Group, USAR.  Introduction and
-    annotations: Aquino MA (2003).  Chapter 3, PSYCON #2.
+    SOURCE CHECK: the cooperative-discussion description is not in the
+    provided MindWar text.
 
-    MindWar characterisation: "8-12 Hz = alpha waves, characteristic of
-    meditation, relaxation and searching for patterns."  Consistent with
-    mainstream EEG literature.  EEG confirmed: Kim et al. (2023).
+    RESEARCH VIEW: alpha is the dominant rhythm of relaxed wakefulness.  Kim
+    et al. (2023) found raised alpha power after 5 min of a 10 Hz beat on a
+    250 Hz carrier; several other studies did not (Ingendoh et al. 2023).
+    Weiland et al. (2011): 10 Hz beats in nature sounds lowered anxiety.
+    For the EEG-replicating version use General suite, Alpha 10 Hz.
 
-    Delivery: binaural beat at 400 Hz carrier.  Headphones required.
-    Research minimum: 10 minutes.  Evidence: Moderate.""",
+    Delivery: binaural beat, 400 Hz carrier.  Headphones required.""",
     ),
-    dict(
-        label    = "Beta  17 Hz  --  Deliberate effort / logical thought",
-        mode     = "mono", beat_hz=17.0, carrier_hz=17.0,
-        duty     = 0.5, band="beta", evidence="Inconclusive",
-        timing   = "during",
+    preset(
+        label    = "Beta  17 Hz  --  BWR Manual: 'anxiety' claim (not supported)",
+        mode     = "monaural", beat_hz=17.0, carrier_hz=400.0,
+        evidence = "Claim unsupported",
         desc     = """\
-    MindWar characterisation: "13-22 Hz, frontal brain activity, deliberate
-    effort, logical thought."  BWR Manual flags 17 Hz for restlessness and
-    anxiety risk.  Best format per BWR Manual: Mono.
-    No peer-reviewed EEG entrainment support.  Evidence: Inconclusive.""",
+    BWR Manual: 17 Hz brings "anxiety and visual disturbances", best format
+    mono.  No provided study reports this, and 16 Hz beats improved mood
+    (Lane 1998).  Played as a monaural beat (400 + 417 Hz) so the beat is
+    audible on speakers.""",
         detail   = """\
-    Source: Valley PE & Aquino MA (1980). From PSYOP to MindWar: The Psychology
-    of Victory. HQ 7th Psychological Operations Group, USAR.  Introduction and
-    annotations: Aquino MA (2003).  Chapter 3, PSYCON #2; BWR Manual.
+    SOURCE CHECK: neither the 17 Hz warning nor the "13-22 Hz deliberate
+    effort, logical thought" description is in the provided MindWar text.
 
-    CAUTION: 17 Hz is flagged in the BWR Manual for restlessness, discomfort,
-    and anxiety risk in sensitive individuals.
+    RESEARCH VIEW: no study links 17 Hz sound to anxiety.  Lane et al. (1998)
+    found 16/24 Hz beats produced less negative mood than 1.5/4 Hz beats.  No
+    beta-band EEG entrainment has been demonstrated (Ingendoh et al. 2023).
 
-    Zero of 14 peer-reviewed EEG studies confirmed reliable beta entrainment
-    via binaural beats (Ingendoh et al. 2023).
+    FORMAT CORRECTION: the previous version played a raw 17 Hz sine, which is
+    infrasonic and inaudible on ordinary headphones and speakers.  A monaural
+    beat delivers an audible 17 Hz rhythm on speakers.
 
-    Not recommended for individuals prone to anxiety.
-    Delivery: mono tone.  No established research minimum.
-    Evidence: Inconclusive.""",
+    Delivery: monaural beat, 400 + 417 Hz in both channels.""",
     ),
-    dict(
-        label    = "Infrasonic  12.5 Hz  --  Covert subliminal vector (subliminal mode)",
-        mode     = "subliminal", beat_hz=12.5, carrier_hz=SUBLIMINAL_CARRIER,
-        duty     = 0.5, band="alpha", evidence="Limited",
-        timing   = "during",
+    preset(
+        label    = "High-carrier AM  12.5 Hz  --  MindWar 'subliminal' claim (corrected)",
+        mode     = "hf_am", beat_hz=12.5, carrier_hz=SUBLIMINAL_CARRIER,
+        evidence = "None (mechanism implausible)",
         desc     = """\
-    MindWar's primary SLIPC delivery vector.  10-15 Hz described as "too low
-    to be consciously detected but capable of inducing resonance in the brain."
-    This preset AM-modulates an 18,500 Hz carrier at 12.5 Hz.  The carrier
-    may be inaudible.  Recommended: 96 kHz sample rate.  Min: 10 minutes.
-    Evidence: Limited.""",
+    An 18,500 Hz tone amplitude-modulated at 12.5 Hz.  It contains no 12.5 Hz
+    energy, only tones at 18,487.5-18,512.5 Hz.  Listeners who cannot hear
+    18.5 kHz (most adults) receive nothing.  Those who can hear a faint,
+    high-pitched flutter, which is audible, not subliminal.  Evidence: none.""",
         detail   = """\
-    Source: Valley PE & Aquino MA (1980). From PSYOP to MindWar: The Psychology
-    of Victory. HQ 7th Psychological Operations Group, USAR.  Introduction and
-    annotations: Aquino MA (2003).  Chapter 3, PSYCON #1 and #2.
+    MINDWAR TEXT (Valley & Aquino 1980, footnote 21): "Infrasound vibration
+    (up to 20 Hz) can subliminally influence brain activity", citing a
+    popular book (Playfair & Hill, The Cycles of Heaven, 1978).  No study in
+    the provided literature supports this.  Even clearly audible beats
+    entrain the EEG inconsistently (Ingendoh et al. 2023).
 
-    LIMITATION: MindWar's true intended delivery is ELF electromagnetic fields
-    transmitted through the environment, penetrating walls and the body's skin
-    surface.  Acoustic software cannot replicate this.
+    PHYSICS: amplitude modulation moves no energy down to 12.5 Hz.  The
+    signal consists of three tones at 18,487.5, 18,500 and 18,512.5 Hz.  The
+    ear can only follow the 12.5 Hz envelope if it can hear the carrier.  The
+    upper limit of hearing falls with age, and many adults cannot hear
+    above roughly 15-17 kHz.  For those listeners nothing arrives.  For those
+    who can hear it, it is an audible high whine.  This mode was previously
+    labelled "subliminal" and "covert"; neither description is accurate.
 
-    Delivery: AM subliminal.  Speakers or headphones.  96 kHz recommended.
-    Research minimum: 10 minutes.  Evidence: Limited.""",
+    Delivery: high-carrier AM.  Use 96 kHz if the interface supports it
+    (44.1 kHz can represent 18.5 kHz, but many DACs roll off above 18 kHz).
+    Only play it for people who have agreed to listen.""",
     ),
-    dict(
-        label    = "Infrasonic  12.5 Hz  --  Skin-surface pressure wave (infrasonic mode)",
+    preset(
+        label    = "Infrasonic  12.5 Hz  --  Direct sub-20 Hz pressure wave",
         mode     = "infrasonic", beat_hz=12.5, carrier_hz=12.5,
-        duty     = 0.5, band="alpha", evidence="Limited",
-        timing   = "during",
+        evidence = "None",
         desc     = """\
-    Outputs a true 12.5 Hz pressure wave with no audible carrier.  The wave
-    is felt through skin and bone conduction rather than heard.  Closest
-    acoustic equivalent to Aquino's skin-surface coupling mechanism.
-    Requires a subwoofer capable of sub-20 Hz output.  Min: 10 minutes.
-    Evidence: Limited.""",
+    A true 12.5 Hz pressure wave with no audible carrier.  Detectable only
+    at very high levels (roughly 90-100 dB SPL), mostly as pressure or
+    vibration.  Needs a subwoofer rated below 20 Hz; ordinary speakers
+    reproduce almost nothing.  Keep the level low.  Evidence: none.""",
         detail   = """\
-    Source: Valley PE & Aquino MA (1980). From PSYOP to MindWar: The Psychology
-    of Victory. HQ 7th Psychological Operations Group, USAR.  Introduction and
-    annotations: Aquino MA (2003).  Chapter 3, PSYCON #1 and #2.
+    MINDWAR TEXT (footnote 21): infrasound "up to 20 Hz" is claimed to align
+    brain activity to delta, theta, alpha or beta.  The citation is a popular
+    book, and no provided study tests the claim.
 
-    This preset outputs a real 12.5 Hz pressure wave with no audible carrier
-    tone.  At this frequency the wave is not consciously heard but is felt
-    through skin and bone conduction across the entire body surface.
+    PHYSICS: hearing thresholds rise steeply below 20 Hz.  At 12.5 Hz a tone
+    must reach roughly 90-100 dB SPL to be noticed, and is felt as pressure
+    rather than heard as pitch.  Most consumer speakers and headphones cannot
+    move enough air at 12.5 Hz.  Driving them hard at full scale can damage
+    small drivers.
 
-    HARDWARE REQUIRED: Most consumer speakers physically cannot move sufficient
-    air at 12.5 Hz.  A subwoofer rated for sub-20 Hz output is required.
+    LIMITATION: the passage in MindWar is about ELF electromagnetic waves and
+    infrasound.  An acoustic wave is not an electromagnetic field and does
+    not penetrate walls the way the text implies.
 
-    LIMITATION: Acoustic pressure waves are not electromagnetic fields.
-    They will not penetrate walls.
-
-    Delivery: direct infrasonic output.  Sub-20 Hz subwoofer required.
-    Research minimum: 10 minutes.  Evidence: Limited.""",
+    Delivery: direct infrasonic output.  Sub-20 Hz subwoofer required.""",
     ),
-    dict(
-        label    = "ELF  57.5 Hz  --  Project Sanguine / biological hazard range",
-        mode     = "isochronic", beat_hz=57.5, carrier_hz=200.0,
-        duty     = 0.5, band="other", evidence="Inconclusive",
-        timing   = "during",
+    preset(
+        label    = "ELF  57.5 Hz  --  Project Sanguine range (acoustic stand-in)",
+        mode     = "isochronic", beat_hz=57.5, carrier_hz=400.0,
+        evidence = "Inconclusive",
         desc     = """\
-    Center of the 45-70 Hz range used by the U.S. Navy's Project Sanguine
-    ELF submarine transmitter.  Aquino cites Becker: these frequencies
-    "alter blood chemistry, blood pressure and brain wave patterns."
-    Speakers or headphones.  No established research minimum.
-    Evidence: Inconclusive.""",
+    MindWar footnote 21 mentions ELF waves "up to 100 Hz" and the Navy's
+    Project Sanguine.  ELF there means electromagnetic waves; this is an
+    acoustic 57.5 Hz rhythm instead.  A 57.3 Hz binaural beat had no EEG
+    effect (Lopez-Caballero 2017).  Speakers or headphones.""",
         detail   = """\
-    Source: Valley PE & Aquino MA (1980). From PSYOP to MindWar: The Psychology
-    of Victory. HQ 7th Psychological Operations Group, USAR.  Introduction and
-    annotations: Aquino MA (2003).  Chapter 3, PSYCON #1; Becker via Aquino.
+    MINDWAR TEXT (footnote 21): "ELF waves up to 100 Hz ... can also be
+    produced artificially (such as for the Navy's Project Sanguine for
+    submarine communication)", and are said to be linked to physiological
+    disorders and emotional distortion.  The 45-70 Hz range and the Becker
+    quotation cited by the previous version are not in the provided text.
 
-    LIMITATION: True ELF effects require electromagnetic antenna hardware.
-    This preset is an isochronic acoustic output only.
+    RESEARCH VIEW: Lopez-Caballero & Escera (2017) presented a 57.3 Hz binaural
+    beat and found no EEG power change (Ingendoh et al. 2023).  Project
+    Sanguine was an electromagnetic antenna system.  Sound at the same
+    frequency is a different physical phenomenon.
 
-    Delivery: isochronic tone.  Speakers or headphones.  No established minimum.
-    Evidence: Inconclusive.""",
+    Delivery: isochronic tone, 400 Hz carrier (raised from 200 Hz so that each
+    pulse holds several complete carrier cycles).  Speakers or headphones.""",
     ),
 ]
 
 SUITE_ALZHEIMERS = [
-    dict(
-        label    = "MIT GENUS  40 Hz  --  Full 1-hour daily protocol",
-        mode     = "isochronic", beat_hz=40.0, carrier_hz=200.0,
-        duty     = 0.5, band="gamma", evidence="Moderate",
-        timing   = "during",
+    preset(
+        label    = "MIT GENUS  40 Hz  --  Auditory click train (1 ms, 10 kHz pips)",
+        mode     = "isochronic", beat_hz=40.0, carrier_hz=10000.0, pulse_ms=1.0,
+        evidence = "Strong (mice) / Limited (humans)",
+        ref_s    = 3600, ref_src="Tsai lab protocol (1 h/day)",
         desc     = """\
-    MIT Picower Institute (Tsai lab) protocol.  40 Hz isochronic tone
-    replicating the LED-flicker GENUS method.  Sound alone reduced amyloid
-    and tau in Alzheimer's mouse models.  Combined light and sound was most
-    effective.  Phase III human trials ongoing (Cognito Therapeutics).
-    Speakers or headphones.  Recommended: 60 minutes daily.  Evidence: Moderate.""",
+    Tsai lab (MIT Picower) auditory GENUS: 1 ms tone pips at 10 kHz repeated
+    40 times per second (Martorell 2019), 1 hour a day.  In Alzheimer's mouse
+    models this reduced amyloid and tau and improved memory; light and sound
+    together worked best.  Human efficacy is not established.
+    Speakers or headphones.  Evidence: Strong (mice) / Limited (humans).""",
         detail   = """\
-    Source: Iaccarino et al. (2016) Nature; MIT Picower Institute / Tsai Lab.
+    Sources: MIT Picower Institute, "40Hz rhythms fight Alzheimer's at the
+    cellular and molecular level".  Iaccarino et al. (2016) Nature, 40 Hz
+    LIGHT/optogenetics.  Martorell et al. (2019) Cell 177:256, 40 Hz SOUND.
 
-    The MIT Picower Institute (Li-Huei Tsai lab) demonstrated from 2016 onward
-    that 40 Hz GENUS (Gamma Entrainment Using Sensory Stimuli) light flickering
-    and/or sound clicking reduced amyloid-beta plaques and tau tangles in
-    transgenic Alzheimer's disease mouse models, prevented neuron death and
-    improved learning and memory.
+    MOUSE FINDINGS: 1 h a day of 40 Hz light for a week reduced amyloid
+    plaques and tau (2016).  Longer stimulation prevented synapse loss, cell
+    death and brain atrophy, and 40 Hz sound alone reduced amyloid and tau
+    and improved learning and memory.  Light and sound together were
+    especially effective (2019).  Proposed mechanisms: improved network
+    connectivity, VIP-driven vessel pulsation and AQP4 channels increasing
+    glymphatic (CSF) clearance, and less inflammatory microglia.
 
-    Sound alone (without light) also reduced amyloid and tau and improved
-    cognition in mice.  Combined light and sound was most effective.  The
-    proposed mechanism involves:
-      - Increased gamma neural network connectivity
-      - Widened blood vessels and glymphatic channels
-      - Enhanced CSF-driven waste clearance (amyloid flushed from brain)
-      - Reduced microglial inflammatory activity
-      - Gene expression changes in neurons and glia
+    HUMANS: pilot studies found 40 Hz light + sound safe and suggested
+    preserved brain volume and cognition (Picower).  Ismail et al. (2018):
+    40 Hz LIGHT, 2 x 60 min a day for 10 days in 6 patients, produced no
+    change in amyloid PET (p > .48); any effect was < 20%, far from the 50%
+    seen in mice.  Cognito Therapeutics has launched a pivotal trial.
 
-    In subsequent human pilot studies, 40 Hz stimulation was found safe,
-    increased gamma-band activity and connectivity and showed apparent benefit
-    in early-stage Alzheimer's patients.  MIT spin-off Cognito Therapeutics has
-    advanced this into Phase III clinical trials.
+    STIMULUS: 1 ms tones at 10 kHz, one every 25 ms (Martorell et al. 2019).
+    These parameters come from the original paper, not the Picower page.
+    HEARING NOTE: many older adults hear 10 kHz poorly.  If the clicks sound
+    faint, use the 400 Hz isochronic preset: 40 Hz responses are about 3x
+    larger at a 250 Hz carrier than at 4 kHz (Ross, via Chaieb 2015).
 
-    Human clinical efficacy is not yet confirmed at Phase III level.
-
-    FORMAT: Isochronic used because 40 Hz exceeds the ~30 Hz binaural perception
-    threshold (Perrott & Nelson 1969).
-
-    Delivery: isochronic tone at 200 Hz carrier.  Speakers or headphones.
-    Protocol: 1 hour daily.  Research minimum: 15 minutes.  Evidence: Moderate.""",
+    Delivery: 40 Hz pulse train.  Speakers or headphones, at a moderate,
+    comfortable level.  Protocol: 1 hour daily.""",
     ),
-    dict(
-        label    = "40 Hz Binaural  --  ASSR via headphones (440/480 Hz)",
+    preset(
+        label    = "40 Hz Monaural beat  --  440 + 480 Hz, speaker-compatible",
+        mode     = "monaural", beat_hz=40.0, carrier_hz=440.0,
+        evidence = "Limited",
+        ref_s    = 300, ref_src="Engelbregt 2021",
+        desc     = """\
+    Both tones (440 + 480 Hz) in both ears, producing a physical 40 Hz beat
+    that works on speakers.  In Engelbregt (2021) this was the only condition
+    that raised 40 Hz EEG power (at Fz), but it also INCREASED Flanker
+    errors.  Speakers or headphones.  Evidence: Limited.""",
+        detail   = """\
+    A monaural beat is two tones summed before reaching the ear: a sinusoidal
+    100% amplitude modulation at the difference frequency.  It is demodulated
+    in the cochlea, whereas binaural beats arise in the superior olivary
+    complex (Chaieb et al. 2015).
+
+    EVIDENCE
+      Engelbregt et al. (2021): the MB condition (440 + 480 Hz, both ears)
+        was the only one with higher 40 Hz power (Fz, vs pink noise and vs
+        binaural).  It also produced MORE Flanker errors than pink noise
+        (partial eta^2 = .47).
+      Draganova et al. (2008): steady-state responses to monaural beats were
+        about 5x larger than to binaural beats (Chaieb et al. 2015).
+      Orozco Perez et al. (2020): at 40 Hz the binaural response was the
+        larger of the two (Ingendoh et al. 2023).  The findings conflict.
+
+    Delivery: monaural beat, 440 + 480 Hz in both channels.
+    Speakers or headphones.  Studied exposure: 5 min (Engelbregt).""",
+    ),
+    preset(
+        label    = "40 Hz Binaural  --  Headphones (440/480 Hz, Engelbregt 2021)",
         mode     = "binaural", beat_hz=40.0, carrier_hz=440.0,
-        duty     = 0.5, band="gamma", evidence="Moderate",
-        timing   = "during",
+        evidence = "Limited (for entrainment)",
+        ref_s    = 300, ref_src="Engelbregt 2021",
         desc     = """\
-    40 Hz binaural beat using Engelbregt 2021 carrier (440/480 Hz).  40 Hz
-    exceeds the binaural perception limit but an ASSR is still measurable in
-    EEG.  Also showed attention improvement vs pink noise in Flanker task.
-    IMPORTANT: Engelbregt 2021 found NO consistent 40/45 Hz EEG power increase
-    with these carriers — cognitive benefit occurred without confirmed entrainment.
-    Headphones required.  Research minimum: 15 minutes.  Evidence: Moderate.""",
+    The Engelbregt (2021) binaural stimulus.  It improved Flanker accuracy but
+    produced NO consistent 40/45 Hz EEG increase, so a benefit, if any, came
+    without gamma entrainment, the mechanism GENUS relies on.  Prefer the
+    click-train or monaural presets for entrainment.  Headphones required.""",
         detail   = """\
-    Sources: Jirakittayakorn & Wongsawat (2017b); Schwarz & Taylor (2005);
-    Engelbregt et al. (2021) Experimental Brain Research.
+    Sources: Engelbregt et al. (2021); Schwarz & Taylor (2005); Grose & Mamo
+    (2012), as summarised in Engelbregt et al. (2021).
 
-    This preset uses the 440/480 Hz carrier pair from Engelbregt et al. (2021),
-    which demonstrated both attention improvement (Flanker task) and is within
-    the range used by Schwarz & Taylor (2005) who confirmed 40 Hz ASSR at 380/420
-    and 390/430 Hz.  Grose & Mamo (2012) showed frequency-following responses
-    at 390/430 Hz.
+    40 Hz BINAURAL RESPONSES: Schwarz & Taylor (2005) measured a 40 Hz
+    steady-state response to a 380/420 Hz binaural beat.  Grose & Mamo (2012)
+    found frequency-following responses at 390/430 Hz and, more weakly, at
+    810/850 Hz.  Schwarz & Taylor found the 40 Hz binaural response was
+    undetectable with carriers above 3 kHz (Chaieb et al. 2015).
 
-    40 Hz binaural ASSR confirmed by Schwarz & Taylor (2005) and Jirakittayakorn
-    & Wongsawat (2017b).
+    WITH THIS CARRIER PAIR: Engelbregt et al. (2021) found no consistent 40 or
+    45 Hz power increase in frontal or temporal electrodes during 440/480 Hz
+    binaural beats, despite fewer Flanker errors (partial eta^2 = .14).
 
-    IMPORTANT — NO EEG ENTRAINMENT CONFIRMED WITH THIS CARRIER PAIR: Engelbregt
-    et al. (2021) explicitly found no consistent increase in absolute 40 or 45 Hz
-    EEG power in frontal or temporal electrodes during 440/480 Hz stimulation.
-    The observed attention improvement (fewer Flanker errors; η²=0.142) likely
-    occurs via a mechanism other than classical brainwave entrainment — the
-    authors suggest norepinephrine/glutamate dynamics (Hommel et al. 2016) as a
-    candidate pathway.  This preset may therefore benefit attention without
-    producing the gamma entrainment relevant to Alzheimer's amyloid clearance
-    mechanisms.  For the entrainment-focused Alzheimer's protocol, prefer the
-    isochronic MIT GENUS or Daily Maintenance presets.
+    CORRECTION: the previous version stated that an ASSR was "confirmed at
+    440/480 Hz" in Engelbregt (2021), and credited Schwarz & Taylor with the
+    390/430 Hz pair.  Engelbregt found no such response, and the 390/430 Hz
+    pair is from Grose & Mamo.
 
-    Delivery: binaural beat.  Headphones required.
-    Research minimum: 15 minutes.  Evidence: Moderate.""",
+    Delivery: binaural beat.  Headphones required.  Studied exposure: 5 min.""",
     ),
-    dict(
-        label    = "40 Hz Daily Maintenance  --  Short session (15 min)",
-        mode     = "isochronic", beat_hz=40.0, carrier_hz=200.0,
-        duty     = 0.5, band="gamma", evidence="Moderate",
-        timing   = "during",
+    preset(
+        label    = "40 Hz Isochronic  --  Low-carrier alternative (400 Hz tone)",
+        mode     = "isochronic", beat_hz=40.0, carrier_hz=400.0,
+        evidence = "Limited (extrapolated)",
+        ref_s    = 3600, ref_src="GENUS daily dose (mice)",
         desc     = """\
-    Short daily session preset for regular use within a sustained protocol.
-    Ismail et al. (2018) found 10-day human trials insufficient for amyloid
-    reduction, indicating weeks or months of consistent daily sessions are
-    likely required for measurable effect.
-    Speakers or headphones.  Research minimum: 15 minutes.  Evidence: Moderate.""",
+    40 Hz on/off pulses of a 400 Hz tone.  A low-pitched alternative to the
+    10 kHz click train for listeners with high-frequency hearing loss: 40 Hz
+    responses are larger at low carriers (Ross, via Chaieb 2015).  Not the
+    stimulus used in the mouse studies.  Speakers or headphones.""",
         detail   = """\
-    Source: Tsai Lab; Ismail et al. (2018), International Journal of
-    Alzheimer's Disease.
+    Ross et al. (reviewed by Chaieb et al. 2015) found 40 Hz steady-state
+    responses about three times larger with a 250 Hz carrier than with a
+    4000 Hz carrier.  This preset trades the exact Tsai-lab stimulus (10 kHz
+    pips) for one that elderly listeners can hear clearly.
 
-    Ismail et al. (2018) found that 10 days was insufficient for amyloid
-    reduction.  This preset is designed for daily short sessions as part of
-    a sustained longer-term protocol rather than as a standalone treatment.
+    No study in the provided literature tested this exact stimulus for
+    Alzheimer's outcomes.  The 1 h reference is the mouse GENUS dose.
 
-    Delivery: isochronic tone at 200 Hz carrier.  Speakers or headphones.
-    Research minimum: 15 minutes.  Evidence: Moderate.""",
+    CORRECTION: this slot was previously "40 Hz Daily Maintenance (15 min)",
+    justified by Ismail et al. (2018).  That study used light, 2 x 60 min a
+    day, and found no effect in 10 days.  It gives no support for 15-minute
+    sessions.
+
+    Delivery: isochronic tone, 400 Hz carrier, 50% duty, 40 Hz.""",
     ),
-    dict(
-        label    = "40 Hz Parametric  --  Ultrasonic in-air beat",
+    preset(
+        label    = "40 Hz Parametric  --  Ultrasonic carriers (specialist hardware)",
         mode     = "parametric", beat_hz=40.0, carrier_hz=PARAMETRIC_BASE,
-        duty     = 0.5, band="gamma", evidence="Inconclusive",
-        timing   = "during",
+        evidence = "None (untested format)",
         desc     = """\
-    Two ultrasonic carriers at 40,000 Hz and 40,040 Hz.  Neither is audible.
-    Their interaction produces a 40 Hz AM envelope in the air itself via
-    nonlinear acoustic demodulation.
-    Requires 96 kHz interface and a transducer passing above 40 kHz.
-    Evidence: Inconclusive (no clinical data for this delivery format).""",
+    Two ultrasonic tones (40,000 + 40,040 Hz).  Only a dedicated parametric
+    speaker array, driven at very high ultrasonic levels, demodulates them
+    in air into an audible 40 Hz tone.  Ordinary speakers and DACs produce
+    nothing audible.  Needs a 96 kHz+ interface.  Evidence: none.""",
         detail   = """\
-    Source: Parametric audio principle applied to MIT Picower 40 Hz target.
+    PHYSICS: two ultrasonic tones produce an audible difference tone only
+    through the nonlinearity of air at very high sound pressure, which is
+    the principle of parametric speaker arrays.  The result is a 40 Hz tone
+    (with harmonics), not an amplitude-modulated carrier.  At ordinary
+    playback levels the demodulated component is negligible.
 
-    Two ultrasonic carrier tones are generated at 40,000 Hz and 40,040 Hz.
-    Neither frequency is audible to humans.  Their amplitude-modulated sum
-    creates a 40 Hz envelope in the ultrasonic band.
+    HARDWARE: requires a 96 kHz or faster interface whose output filter
+    passes 40 kHz, and an ultrasonic transducer array.  Keep exposure within
+    occupational ultrasound guidelines.
 
-    HARDWARE REQUIREMENT: Most consumer audio interfaces and DACs roll off
-    well before 40 kHz.  A professional interface with flat response to 40+
-    kHz and a compatible transducer are required.
-
-    Delivery: parametric ultrasonic.  96 kHz SR required.
-    Evidence: Inconclusive (delivery format untested in clinical trials).""",
+    No clinical data exist for this delivery format.""",
     ),
-    dict(
-        label    = "Upper Gamma  60 Hz  --  High cognition / distributed coordination",
-        mode     = "isochronic", beat_hz=60.0, carrier_hz=200.0,
-        duty     = 0.5, band="gamma", evidence="Inconclusive",
-        timing   = "during",
+    preset(
+        label    = "Upper Gamma  60 Hz  --  Isochronic (no specific evidence)",
+        mode     = "isochronic", beat_hz=60.0, carrier_hz=400.0,
+        evidence = "Inconclusive",
         desc     = """\
-    Upper gamma range (40-70 Hz), correlated with perceptual binding,
-    distributed cortical coordination and intense attentional states.
-    Auditory gamma entrainment research is less established than 40 Hz.
-    Speakers or headphones.  Research minimum: 15 minutes.
-    Evidence: Inconclusive (insufficient research at 60 Hz specifically).""",
+    60 Hz lies in the upper gamma range.  The 40 Hz evidence does not
+    extrapolate to it: a 57.3 Hz binaural beat produced no EEG change
+    (Lopez-Caballero 2017), and the GENUS studies did not use 60 Hz.
+    Speakers or headphones.  Evidence: Inconclusive.""",
         detail   = """\
-    60 Hz sits within the 40-70 Hz gamma range correlated with high-level
-    information processing, perceptual binding, cross-regional neural
-    coordination and states of intense attentional focus.
+    60 Hz sits in the upper gamma range associated with perceptual binding
+    and local cortical processing.  The Tsai-lab work targets 40 Hz
+    specifically.  Lopez-Caballero & Escera (2017) found no EEG power change
+    for a 57.3 Hz binaural beat (Ingendoh et al. 2023).
 
-    Auditory gamma entrainment research is considerably less established than
-    visual (LED flicker) GENUS research.  The 40 Hz target has by far the
-    strongest evidence base.  Individual entrainment responses at 60 Hz are
-    highly variable.
+    Note: mains hum is 60 Hz in the Americas, so this rhythm may sound like
+    electrical hum.
 
-    Delivery: isochronic tone at 200 Hz carrier.  Speakers or headphones.
-    Research minimum: 15 minutes.
-    Evidence: Inconclusive (40 Hz data does not extrapolate to 60 Hz).""",
+    Delivery: isochronic tone, 400 Hz carrier (raised from 200 Hz so each
+    8.3 ms pulse holds several complete carrier cycles).""",
     ),
 ]
 
+SUITES = [
+    ("General Brainwave Suite", SUITE_GENERAL),
+    ("Attention & Cognition Suite", SUITE_ATTENTION),
+    ("MindWar / BWR Manual Suite", SUITE_MINDWAR),
+    ("Alzheimer's / 40 Hz Suite", SUITE_ALZHEIMERS),
+]
+
 # ---------------------------------------------------------------------------
-#  GLOBAL STATE
+#  SIGNAL GENERATION
+#
+#  Everything is computed from the absolute sample index, so blocks join
+#  seamlessly and the output is identical for any block size.  The self-test
+#  checks that property for every preset.
+# ---------------------------------------------------------------------------
+
+def duty_of(p):
+    if p.get("pulse_ms"):
+        return min(1.0, p["pulse_ms"] * 1e-3 * p["beat_hz"])
+    return p["duty"]
+
+
+def _sine(f, t):
+    return np.sin(2 * np.pi * f * t)
+
+
+def _pulse_ramp(rate, duty, ramp_s=0.005):
+    """Raised-cosine edge length: 5 ms, but at most a quarter of the on-time."""
+    return min(ramp_s, duty / rate / 4.0)
+
+
+def pulse_gate(t, rate, duty):
+    """Isochronic gate with raised-cosine rise AND fall, from absolute time."""
+    if duty >= 1.0:
+        return np.ones_like(t)
+    period = 1.0 / rate
+    on     = duty * period
+    ramp   = _pulse_ramp(rate, duty)
+    tau    = np.mod(t, period)
+    g      = (tau < on).astype(np.float64)
+    rise   = tau < ramp
+    g[rise] = 0.5 - 0.5 * np.cos(np.pi * tau[rise] / ramp)
+    fall   = (tau < on) & (tau > on - ramp)
+    g[fall] = 0.5 - 0.5 * np.cos(np.pi * (on - tau[fall]) / ramp)
+    return g
+
+
+def tone_block(p, t, nch=2):
+    """Unit-peak tone for one block.  Returns (n, nch) float64."""
+    m, c, b = p["mode"], p["carrier_hz"], p["beat_hz"]
+    if m == "binaural":
+        return np.column_stack((_sine(c, t), _sine(c + b, t)))
+    if m in ("monaural", "parametric"):
+        x = 0.5 * (_sine(c, t) + _sine(c + b, t))
+    elif m in ("isochronic", "surround"):
+        x = _sine(c, t) * pulse_gate(t, b, duty_of(p))
+    elif m == "hf_am":
+        x = _sine(c, t) * (0.5 + 0.5 * np.cos(2 * np.pi * b * t))
+    elif m == "infrasonic":
+        x = _sine(b, t)
+    else:                                   # mono
+        x = _sine(c, t)
+    return np.repeat(x[:, None], nch if m == "surround" else 2, axis=1)
+
+
+# Pink-noise IIR filter (J. O. Smith, "Generation of pink noise"): -3 dB/octave
+# within ~0.3 dB over the audio band.
+_PINK_B = [0.049922035, -0.095993537, 0.050612699, -0.004408786]
+_PINK_A = [1.0, -2.494956002, 2.017265875, -0.522189400]
+
+
+class NoiseSource:
+    """Continuous white or pink noise at a fixed RMS level.  The filter state
+    carries across blocks, so there are no seams and no per-block gain jumps."""
+
+    def __init__(self, kind, seed=None):
+        self.kind = kind
+        self.rng  = np.random.default_rng(seed)
+        self.gain = NOISE_RMS
+        if kind == "pink":
+            probe = sps.lfilter(_PINK_B, _PINK_A, np.random.default_rng(0).standard_normal(1 << 17))
+            self.gain = NOISE_RMS / np.sqrt(np.mean(probe[8192:] ** 2))
+            self.zi   = np.zeros(len(_PINK_A) - 1)
+
+    def block(self, n):
+        w = self.rng.standard_normal(n)
+        if self.kind == "pink":
+            w, self.zi = sps.lfilter(_PINK_B, _PINK_A, w, zi=self.zi)
+        return w * self.gain
+
+
+class Renderer:
+    """Produces successive blocks of a session: tone, optional masking noise,
+    fixed gain, fade-in, scheduled fade-out and an on-demand release fade."""
+
+    def __init__(self, p, sr, amplitude=0.8, noise=None, noise_lvl=0.0,
+                 total=None, nch=2, fade_s=FADE_S, seed=None):
+        self.p, self.sr, self.amp, self.total = p, sr, amplitude, total
+        self.nch   = nch if p["mode"] == "surround" else 2
+        self.lvl   = noise_lvl if noise else 0.0
+        self.noise = NoiseSource(noise, seed) if noise and noise_lvl > 0 else None
+        self.fade  = int(fade_s * sr)
+        self.rel_n = int(STOP_FADE_S * sr)
+        self.rel_at = None
+        self.pos   = 0
+
+    def release(self):
+        """Begin a short fade-out from the current position (used on Ctrl+C)."""
+        if self.rel_at is None:
+            self.rel_at = self.pos
+
+    def next_block(self, n=BLOCK_SIZE):
+        end = self.pos + n
+        if self.total is not None:
+            end = min(end, self.total)
+        if self.rel_at is not None:
+            end = min(end, self.rel_at + self.rel_n)
+        n = end - self.pos
+        if n <= 0:
+            return None
+        k = np.arange(self.pos, end, dtype=np.float64)
+        x = tone_block(self.p, k / self.sr, self.nch)
+        if self.noise is not None:
+            x = x * (1.0 - self.lvl) + self.noise.block(n)[:, None] * self.lvl
+        g = np.full(n, self.amp)
+        if self.fade > 0:
+            g *= np.minimum(1.0, k / self.fade)
+            if self.total is not None:
+                g *= np.minimum(1.0, (self.total - k) / self.fade)
+        if self.rel_at is not None:
+            g *= np.clip(1.0 - (k - self.rel_at) / self.rel_n, 0.0, 1.0)
+        self.pos = end
+        return np.clip(x * g[:, None], -1.0, 1.0).astype(np.float32)
+
+
+def render(p, sr, seconds, block=BLOCK_SIZE, **kw):
+    """Render a whole session into memory (used by the self-test)."""
+    r = Renderer(p, sr, total=int(seconds * sr), **kw)
+    out = []
+    while (blk := r.next_block(block)) is not None:
+        out.append(blk)
+    return np.concatenate(out)
+
+# ---------------------------------------------------------------------------
+#  PARAMETER CHECKS
+# ---------------------------------------------------------------------------
+
+def signal_top_hz(p):
+    m, c, b = p["mode"], p["carrier_hz"], p["beat_hz"]
+    if m == "infrasonic":
+        return b
+    if m == "mono":
+        return c
+    return c + b
+
+
+def check_params(p, sr):
+    """Return (errors, warnings) for a preset at a given sample rate."""
+    errors, warns = [], []
+    m, c, b = p["mode"], p["carrier_hz"], p["beat_hz"]
+    nyq = sr / 2
+    top = signal_top_hz(p)
+    if top >= nyq:
+        errors.append(f"{top:g} Hz is at or above the Nyquist limit ({nyq:g} Hz) "
+                      f"for {sr} Hz audio; it would alias.")
+    elif top > 0.9 * nyq:
+        warns.append(f"{top:g} Hz is close to the Nyquist limit; many DACs filter it out.")
+    if m in ("isochronic", "surround"):
+        d = duty_of(p)
+        if not 0.0 < d <= 1.0:
+            errors.append("Duty cycle must be greater than 0 and at most 1.")
+        elif c * d / b < 2:
+            warns.append(f"Each pulse holds only {c*d/b:.1f} carrier cycles.  A carrier of "
+                         f"at least {math.ceil(2*b/d)} Hz gives a clean tone.")
+    if m == "binaural":
+        if b > BINAURAL_LIMIT:
+            warns.append(f"{b:g} Hz is above the ~{BINAURAL_LIMIT:g} Hz limit for hearing a "
+                         "binaural beat (Perrott & Nelson 1969).  Brain responses to 40 Hz "
+                         "beats are still measurable (Schwarz & Taylor 2005).")
+        if c + b > BINAURAL_CARRIER_MAX:
+            warns.append("Binaural beats need tones below ~1000 Hz (Licklider 1950; Oster "
+                         "1973); 400 Hz is the usual recommendation (Goodin 2012).")
+    if m in ("mono", "infrasonic"):
+        f = c if m == "mono" else b
+        if f < 20:
+            warns.append(f"{f:g} Hz is infrasonic.  Most headphones and speakers cannot "
+                         "reproduce it audibly, and it is detected only at very high levels.  "
+                         "Keep the volume low to protect small drivers.  For an audible "
+                         f"{f:g} Hz rhythm use the monaural or isochronic mode.")
+    if m == "hf_am" and c > 15000:
+        warns.append("Many adults cannot hear above ~15-17 kHz.  A listener who cannot hear "
+                     f"the carrier receives no {b:g} Hz modulation at all.")
+    if m == "parametric":
+        warns.append("Needs a parametric (ultrasonic) speaker array; ordinary speakers "
+                     "produce nothing audible.")
+    return errors, warns
+
+# ---------------------------------------------------------------------------
+#  FREQUENCY ANALYSIS
+# ---------------------------------------------------------------------------
+
+def _spectrum(x, sr):
+    """Amplitude spectrum of a Hann-windowed, DC-removed signal."""
+    x = x - np.mean(x)
+    w = np.hanning(len(x))
+    X = np.abs(np.fft.rfft(x * w)) * 2.0 / w.sum()
+    f = np.fft.rfftfreq(len(x), 1.0 / sr)
+    return f, X
+
+
+def _interp(X, i):
+    """Parabolic interpolation of a spectral peak on log magnitude (bins)."""
+    if 0 < i < len(X) - 1:
+        a, b, c = np.log(X[i - 1:i + 2] + 1e-30)
+        den = a - 2 * b + c
+        if den != 0:
+            return 0.5 * (a - c) / den
+    return 0.0
+
+
+def _tonal_peaks(f, X, fmin, fmax, k=3, floor_db=-40.0):
+    df = f[1] - f[0]
+    lo = max(1, int(np.searchsorted(f, fmin)))
+    hi = int(np.searchsorted(f, fmax))
+    if hi - lo < 3:
+        return []
+    idx, _ = sps.find_peaks(X[lo:hi], distance=max(1, int(round(0.5 / df))))
+    if len(idx) == 0:
+        return []
+    idx = idx + lo
+    idx = idx[np.argsort(X[idx])[::-1]][:k]
+    ref = X[idx[0]]
+    peaks = []
+    for i in idx:
+        rel = 20 * np.log10(X[i] / ref)
+        if rel >= floor_db:
+            peaks.append((f[i] + _interp(X, i) * df, rel))
+    return peaks
+
+
+def _envelope_modulation(x, sr, fmin=0.5, fmax=120.0):
+    """Lowest prominent amplitude-modulation rate and its depth, or None."""
+    n = len(x)
+    env = np.abs(sps.hilbert(x - np.mean(x), spfft.next_fast_len(n))[:n])
+    q = max(1, int(sr // 1000))                 # decimate envelope to ~1 kHz
+    m = n // q * q
+    if m < 4 * q:
+        return None
+    env = env[:m].reshape(-1, q).mean(axis=1)
+    esr = sr / q
+    mean = env.mean()
+    if mean <= 1e-9:
+        return None
+    f, E = _spectrum(env, esr)
+    band = np.where((f >= fmin) & (f <= min(fmax, esr / 2)))[0]
+    if len(band) < 8:
+        return None
+    floor = np.median(E[band])
+    idx, _ = sps.find_peaks(E[band], height=max(25 * floor, 0.01 * mean))
+    if len(idx) == 0:
+        return None
+    idx = band[idx]
+    strongest = E[idx].max()
+    i = min(j for j in idx if E[j] >= 0.3 * strongest)   # fundamental, not a harmonic
+    rate = f[i] + _interp(E, i) * (f[1] - f[0])
+    # Depth = how far the cycle-averaged envelope dips below its peak:
+    # 100% for on/off pulses and monaural beats, matching embed mode's depth.
+    phase = np.floor(np.mod(np.arange(len(env)) * rate / esr, 1.0) * 64).astype(int)
+    cycle = np.bincount(phase, env, 64) / np.maximum(np.bincount(phase, None, 64), 1)
+    return rate, 1.0 - cycle.min() / cycle.max()
+
+
+def analyse(data, sr, max_ch=8):
+    """Analyse a (frames, channels) float array.  Returns a dict."""
+    res = dict(sr=sr, seconds=len(data) / sr, df=sr / len(data),
+               nch=data.shape[1], channels=[], binaural=None)
+    for ch in range(min(data.shape[1], max_ch)):
+        x = data[:, ch].astype(np.float64)
+        rms = float(np.sqrt(np.mean((x - x.mean()) ** 2)))
+        if rms < 1e-6:
+            res["channels"].append(dict(silent=True))
+            continue
+        f, X = _spectrum(x, sr)
+        res["channels"].append(dict(
+            silent=False, rms_db=20 * np.log10(rms),
+            peaks=_tonal_peaks(f, X, 0.5, 0.999 * sr / 2),
+            mod=_envelope_modulation(x, sr)))
+    chs = res["channels"]
+    if len(chs) >= 2 and not chs[0]["silent"] and not chs[1]["silent"] \
+            and chs[0]["peaks"] and chs[1]["peaks"]:
+        fl, fr = chs[0]["peaks"][0][0], chs[1]["peaks"][0][0]
+        shared = any(abs(fl - g) < 0.05 for g, _ in chs[1]["peaks"]) or \
+                 any(abs(fr - g) < 0.05 for g, _ in chs[0]["peaks"])
+        if not shared and max(fl, fr) < 1500 and 0.05 < abs(fr - fl) <= 45:
+            res["binaural"] = (fl, fr, abs(fr - fl))
+    return res
+
+
+def detect_frequency(file_path, duration=60):
+    """Analyse up to `duration` seconds of an audio file and print a report.
+    Returns the analysis dict (None on error)."""
+    if not os.path.isfile(file_path):
+        print(f"  Error: file not found: {file_path}")
+        return None
+    try:
+        info = sf.info(file_path)
+        frames = min(info.frames, int(info.samplerate * duration))
+        if frames < info.samplerate // 10:
+            print("  Error: file is too short to analyse (< 0.1 s).")
+            return None
+        data, sr = sf.read(file_path, frames=frames, always_2d=True, dtype="float64")
+    except Exception as e:
+        print(f"  Error reading audio: {e}")
+        return None
+
+    res = analyse(data, sr)
+    names = {0: "left", 1: "right"} if data.shape[1] == 2 else {}
+    print(f"  Sample rate : {sr} Hz, {data.shape[1]} channel(s)")
+    print(f"  Analysed    : {res['seconds']:.1f} s  (resolution {res['df']:.3f} Hz)")
+    for i, ch in enumerate(res["channels"]):
+        print()
+        tag = f" ({names[i]})" if i in names else ""
+        if ch["silent"]:
+            print(f"  Channel {i+1}{tag}: silent")
+            continue
+        print(f"  Channel {i+1}{tag}   level {ch['rms_db']:.1f} dBFS RMS")
+        peaks = ", ".join(f"{fq:.2f} Hz ({rel:+.1f} dB)" for fq, rel in ch["peaks"])
+        print(f"    Strongest tones : {peaks or 'none'}")
+        if ch["mod"]:
+            print(f"    Amplitude mod.  : {ch['mod'][0]:.2f} Hz  (level dips {ch['mod'][1]*100:.0f}%)")
+        else:
+            print("    Amplitude mod.  : none detected (0.5-120 Hz)")
+    if res["nch"] > len(res["channels"]):
+        print(f"\n  ({res['nch'] - len(res['channels'])} further channels not analysed)")
+    print()
+    if res["binaural"]:
+        fl, fr, d = res["binaural"]
+        print(f"  Binaural offset : {d:.2f} Hz  (left {fl:.2f} Hz / right {fr:.2f} Hz)")
+        if d > BINAURAL_LIMIT:
+            print(f"    Above the ~{BINAURAL_LIMIT:g} Hz binaural percept limit (Perrott & Nelson 1969).")
+    mods = [c["mod"][0] for c in res["channels"] if not c["silent"] and c["mod"]]
+    if res["binaural"] and not mods:
+        print("  Looks like      : binaural beat (pure tone per ear, no physical beat)")
+    elif mods:
+        print(f"  Looks like      : monaural / isochronic / AM rhythm at {mods[0]:.2f} Hz")
+    first = next((c for c in res["channels"] if not c["silent"] and c["peaks"]), None)
+    if first:
+        print(f"  Dominant freq.  : {first['peaks'][0][0]:.2f} Hz")
+    return res
+
+# ---------------------------------------------------------------------------
+#  PLAYBACK AND EXPORT
 # ---------------------------------------------------------------------------
 
 stop_event = threading.Event()
-_t0_wall   = None
-_amplitude = 0.8
-_pink_lvl  = 0.0   # 0.0 = no pink noise, >0 = blend level
 
-# ---------------------------------------------------------------------------
-#  SIGNAL GENERATORS  (vectorised — no per-sample loops)
-# ---------------------------------------------------------------------------
 
-def _env(t0, n, fi, fo, tot):
-    e = np.ones(n, dtype=np.float32)
-    if fi > 0 and t0 < fi:
-        hi = min(t0+n, fi); k = hi-t0
-        e[:k] = np.linspace(t0/fi, hi/fi, k, endpoint=False, dtype=np.float32)
-    if tot and fo > 0:
-        fs = tot-fo
-        if t0+n > fs:
-            lb  = max(0, fs-t0)
-            a0  = max(0.0, (tot-(t0+lb))/fo)
-            a1  = max(0.0, (tot-(t0+n))/fo)
-            e[lb:] *= np.linspace(a0, a1, n-lb, endpoint=False, dtype=np.float32)
-    return e
+def _sigint(sig, frame):
+    if stop_event.is_set():
+        raise KeyboardInterrupt
+    stop_event.set()
+    sys.stdout.write("\n  Stopping (fading out) -- Ctrl+C again to stop immediately.\n")
+    sys.stdout.flush()
 
-def _t(t0, n, sr):
-    return (np.arange(n, dtype=np.float64)+t0)/sr
-
-def _gate(t, beat, duty, sr, n):
-    gate = ((t*beat)%1.0 < duty).astype(np.float32)
-    tl   = min(int(sr*0.005), max(1, n//8))
-    if tl > 1:
-        tap  = np.hanning(tl*2)[:tl].astype(np.float32)
-        diff = np.diff(gate, prepend=gate[0])
-        for i in np.where(diff>0)[0]:
-            j=min(i+tl,n); gate[i:j]*=tap[:j-i]
-        for i in np.where(diff<0)[0]:
-            j=min(i+tl,n); gate[i:j]*=tap[:j-i][::-1]
-    return gate
-
-def gen_pink_noise(n):
-    """Pink noise via FFT spectral shaping (1/sqrt(f)), Garcia-Argibay 2018:
-    pink noise masking does not reduce binaural beat efficacy; Chaieb 2015:
-    may amplify the binaural beat percept."""
-    white = np.random.randn(n)
-    fft   = np.fft.rfft(white)
-    freqs = np.fft.rfftfreq(n)
-    freqs[0] = 1.0                         # avoid div-by-zero at DC
-    fft      = fft / np.sqrt(freqs)
-    pink     = np.fft.irfft(fft, n)
-    peak     = np.max(np.abs(pink))
-    return (pink / peak if peak > 0 else pink).astype(np.float32)
-
-def stereo(m):
-    return np.column_stack((m, m))
-
-def _apply_pink(stereo_blk, n):
-    """Blend pink noise into a stereo block according to global _pink_lvl."""
-    if _pink_lvl <= 0.0:
-        return stereo_blk
-    pink  = gen_pink_noise(n)
-    pink2 = np.column_stack((pink, pink))
-    return stereo_blk * (1.0 - _pink_lvl) + pink2 * _pink_lvl
-
-def gen_binaural(carr, beat, t0, n, sr, fi, fo, tot):
-    t = _t(t0, n, sr); e = _env(t0, n, fi, fo, tot)
-    L = (np.sin(2*np.pi*carr*t)*e).astype(np.float32)
-    R = (np.sin(2*np.pi*(carr+beat)*t)*e).astype(np.float32)
-    return np.column_stack((L, R))
-
-def gen_isochronic(carr, beat, t0, n, sr, duty, fi, fo, tot):
-    t = _t(t0, n, sr); e = _env(t0, n, fi, fo, tot)
-    m = (np.sin(2*np.pi*carr*t)*_gate(t, beat, duty, sr, n)*e).astype(np.float32)
-    return stereo(m)
-
-def gen_mono(carr, t0, n, sr, fi, fo, tot):
-    t = _t(t0, n, sr); e = _env(t0, n, fi, fo, tot)
-    return stereo((np.sin(2*np.pi*carr*t)*e).astype(np.float32))
-
-def gen_infrasonic(beat, t0, n, sr, fi, fo, tot):
-    return gen_mono(beat, t0, n, sr, fi, fo, tot)
-
-def gen_subliminal(carr, beat, t0, n, sr, fi, fo, tot):
-    t  = _t(t0, n, sr); e = _env(t0, n, fi, fo, tot)
-    am = (1.0+np.cos(2*np.pi*beat*t))/2.0
-    return stereo((np.sin(2*np.pi*carr*t)*am*e).astype(np.float32))
-
-def gen_parametric(base, beat, t0, n, sr, fi, fo, tot):
-    t = _t(t0, n, sr); e = _env(t0, n, fi, fo, tot)
-    w = ((np.sin(2*np.pi*base*t)+np.sin(2*np.pi*(base+beat)*t))*0.5*e).astype(np.float32)
-    return stereo(w)
-
-def gen_surround(carr, beat, t0, n, sr, nch, duty, fi, fo, tot):
-    blk = gen_isochronic(carr, beat, t0, n, sr, duty, fi, fo, tot)
-    return np.tile(blk[:,0:1], (1, nch))
-
-def norm(b):
-    p = np.max(np.abs(b))
-    b = b/p if p > 1.0 else b
-    return (b * _amplitude).astype(np.float32)
-
-# ---------------------------------------------------------------------------
-#  PRODUCER + PLAYBACK
-# ---------------------------------------------------------------------------
-
-def producer(p, q, stop_ev, sr, total=None, nch=2):
-    fi = int(FADE_S*sr); t0 = 0
-    while not stop_ev.is_set():
-        if total and t0 >= total:
-            q.put(None); break
-        fill = BLOCK_SIZE if not total else min(BLOCK_SIZE, total-t0)
-        kw   = dict(t0=t0, n=fill, sr=sr, fi=fi, fo=fi, tot=total)
-        m    = p["mode"]
-        if   m=="binaural":   blk=gen_binaural(p["carrier_hz"],p["beat_hz"],**kw)
-        elif m=="isochronic": blk=gen_isochronic(p["carrier_hz"],p["beat_hz"],duty=p["duty"],**kw)
-        elif m=="mono":       blk=gen_mono(p["carrier_hz"],**kw)
-        elif m=="infrasonic": blk=gen_infrasonic(p["beat_hz"],**kw)
-        elif m=="subliminal": blk=gen_subliminal(p["carrier_hz"],p["beat_hz"],**kw)
-        elif m=="parametric": blk=gen_parametric(p["carrier_hz"],p["beat_hz"],**kw)
-        elif m=="surround":   blk=gen_surround(p["carrier_hz"],p["beat_hz"],
-                                               t0,fill,sr,nch,p["duty"],fi,fi,total)
-        else:                 blk=gen_mono(p["carrier_hz"],**kw)
-        blk = _apply_pink(blk, fill)
-        blk = norm(blk)
-        if fill < BLOCK_SIZE:
-            blk = np.vstack((blk, np.zeros((BLOCK_SIZE-fill,blk.shape[1]),dtype=np.float32)))
-        q.put(blk); t0 += fill
-
-def make_cb(q):
-    def cb(out, frames, ti, st):
-        try:   blk = q.get_nowait()
-        except queue.Empty: out[:] = 0; return
-        if blk is None: raise sd.CallbackStop()
-        out[:] = blk.reshape(out.shape)
-    return cb
-
-def prefill(q, n=PREFILL//2):
-    while q.qsize() < n: pass
-
-def get_nch():
-    try:
-        d = sd.query_devices(sd.default.device[1], 'output')
-        return max(2, int(d['max_output_channels']))
-    except: return 2
 
 def fmt(s):
-    s = int(s); h,r = divmod(s,3600); m,sc = divmod(r,60)
+    s = int(max(0, s)); h, r = divmod(s, 3600); m, sc = divmod(r, 60)
     return f"{h:02d}:{m:02d}:{sc:02d}"
 
-# Research milestone markers (seconds) for progress display
-_MILESTONES = [
-    (300,  "5 min  — alpha/theta minimum (Kim 2023)"),
-    (360,  "6 min  — theta EEG confirmed (Jirakittayakorn 2017)"),
-    (600,  "10 min — optimal cortical spread (Garcia-Argibay 2018)"),
-    (900,  "15 min — gamma EEG confirmed (Jirakittayakorn 2017b)"),
-    (1020, "17 min — memory encoding window (Garcia-Argibay 2017)"),
-    (1200, "20 min — delta minimum"),
-    (3600, "60 min — MIT GENUS full protocol"),
-]
-_milestones_fired = set()
 
-def progress_thread(min_s, total_s):
-    global _t0_wall
-    _t0_wall = time.time()
-    _milestones_fired.clear()
-    while not stop_event.is_set():
-        e   = time.time() - _t0_wall
-        pct = min(e/min_s*100, 100) if min_s > 0 else 100
-        bar = "="*int(pct/5) + "-"*(20-int(pct/5))
-        rem = f"  rem {fmt(max(0, total_s-e))}" if total_s else "  continuous"
-        sys.stdout.write(f"\r  {fmt(e)}  [{bar}] {pct:5.1f}%{rem}   ")
+def _status_line(elapsed, total_s, p):
+    goal = total_s or p.get("ref_s") or 0
+    pct  = min(elapsed / goal * 100, 100) if goal else 0
+    bar  = "=" * int(pct / 5) + "-" * (20 - int(pct / 5))
+    rem  = f"  rem {fmt(total_s - elapsed)}" if total_s else "  continuous"
+    return f"\r  {fmt(elapsed)}  [{bar}] {pct:5.1f}%{rem}   "
+
+
+def _monitor(p, total_s, pretask, done, t0):
+    """Progress line, reference-exposure notice and pre-task alert."""
+    ref, ref_hit, alert_hit = p.get("ref_s"), False, False
+    while not done.wait(1.0):
+        e = time.time() - t0
+        sys.stdout.write(_status_line(e, total_s, p))
+        if ref and not ref_hit and e >= ref:
+            ref_hit = True
+            sys.stdout.write(f"\n  *** {fmt(ref)} reached: the exposure used in {p['ref_src']}.\n")
+        if pretask and not alert_hit and e >= pretask:
+            alert_hit = True
+            sys.stdout.write("\n\n  ╔══════════════════════════════════╗\n"
+                             "  ║  >>> BEGIN YOUR TASK NOW <<<     ║\n"
+                             "  ║  Pre-task induction complete     ║\n"
+                             "  ╚══════════════════════════════════╝\n\n")
         sys.stdout.flush()
-        for ts, label in _MILESTONES:
-            if e >= ts and ts not in _milestones_fired:
-                _milestones_fired.add(ts)
-                sys.stdout.write(f"\n  *** MILESTONE: {label}\n  ")
-                sys.stdout.flush()
-        time.sleep(1)
     sys.stdout.write("\n")
 
-def run_session(p, duration, sr, pretask=0.0):
-    """Run audio session.  pretask = pre-task induction seconds (then alert)."""
-    global _t0_wall
-    nch   = get_nch() if p["mode"]=="surround" else 2
-    total = None if not duration else int(duration*sr)
-    q     = queue.Queue(maxsize=PREFILL*2)
-    local = threading.Event()
-    sev   = local if total else stop_event
 
-    thr = threading.Thread(target=producer, args=(p,q,sev,sr,total,nch), daemon=True)
-    thr.start(); prefill(q)
-    threading.Thread(target=progress_thread,
-                     args=(MIN.get(p["band"],0), duration if duration else None),
-                     daemon=True).start()
+def _surround_channels(sd):
+    try:
+        d = sd.query_devices(sd.default.device[1], "output")
+        return max(2, int(d["max_output_channels"]))
+    except Exception:
+        return 2
 
-    if pretask > 0:
-        # Start a thread to fire the pre-task alert
-        def _pretask_alert():
-            time.sleep(pretask)
-            if not stop_event.is_set():
-                sys.stdout.write(
-                    f"\n\n  ╔══════════════════════════════════╗\n"
-                    f"  ║  >>> BEGIN YOUR TASK NOW <<<     ║\n"
-                    f"  ║  Pre-task induction complete      ║\n"
-                    f"  ╚══════════════════════════════════╝\n\n  ")
+
+def play_session(p, cfg, duration, sr, pretask=0.0):
+    """Play through the default output device.  Returns elapsed seconds, or
+    None if playback could not start."""
+    sd = _load_sounddevice()
+    if sd is None:
+        return None
+    nch = _surround_channels(sd) if p["mode"] == "surround" else 2
+    try:
+        sd.check_output_settings(samplerate=sr, channels=nch, dtype=DTYPE)
+    except Exception as e:
+        print(f"  The output device cannot play {sr} Hz / {nch} channels: {e}")
+        print("  Choose another sample rate, or export to a file instead.")
+        return None
+
+    total = int(duration * sr) if duration else None
+    r = Renderer(p, sr, cfg["amplitude"], cfg["noise"], cfg["noise_lvl"], total, nch)
+    q = queue.Queue(maxsize=PREFILL * 2)
+    finished, errors = threading.Event(), []
+    underruns = [0]
+
+    def put(item):
+        while not finished.is_set():
+            try:
+                q.put(item, timeout=0.1)
+                return True
+            except queue.Full:
+                continue
+        return False
+
+    def producer():
+        try:
+            while True:
+                if stop_event.is_set():
+                    r.release()
+                blk = r.next_block()
+                if blk is None:
+                    put(None)
+                    return
+                if len(blk) < BLOCK_SIZE:
+                    blk = np.vstack((blk, np.zeros((BLOCK_SIZE - len(blk), blk.shape[1]), np.float32)))
+                if not put(blk):
+                    return
+        except Exception as e:
+            errors.append(e)
+            put(None)
+
+    def callback(out, frames, ti, status):
+        if status.output_underflow:
+            underruns[0] += 1
+        try:
+            blk = q.get_nowait()
+        except queue.Empty:
+            out.fill(0)
+            underruns[0] += 1
+            return
+        if blk is None:
+            out.fill(0)
+            raise sd.CallbackStop()
+        out[:] = blk
+
+    stop_event.clear()
+    threading.Thread(target=producer, daemon=True).start()
+    deadline = time.time() + 5
+    while q.qsize() < PREFILL and not errors and time.time() < deadline:
+        time.sleep(0.005)
+    if errors:
+        raise errors[0]
+
+    old = signal.signal(signal.SIGINT, _sigint)
+    t0 = time.time()
+    mon = threading.Thread(target=_monitor, args=(p, duration, pretask, finished, t0), daemon=True)
+    try:
+        with sd.OutputStream(samplerate=sr, channels=nch, blocksize=BLOCK_SIZE,
+                             dtype=DTYPE, callback=callback,
+                             finished_callback=finished.set):
+            mon.start()
+            stop_seen = None
+            while not finished.wait(0.2):
+                if stop_event.is_set():
+                    stop_seen = stop_seen or time.time()
+                    if time.time() - stop_seen > STOP_FADE_S + 3:
+                        break       # safety net; leaving the block aborts the stream
+    except KeyboardInterrupt:
+        print("\n  Stopped immediately.")
+    finally:
+        finished.set()
+        signal.signal(signal.SIGINT, old)
+        mon.join(timeout=2)
+    if errors:
+        raise errors[0]
+    if underruns[0]:
+        print(f"  Note: {underruns[0]} audio buffer underrun(s) -- the system could not keep up.")
+    return time.time() - t0
+
+
+EXPORT_FORMATS = {".wav": "PCM_24", ".flac": "PCM_24", ".ogg": None, ".aiff": "PCM_24"}
+
+
+def export_session(p, cfg, duration, sr, path, nch=2):
+    """Render a timed session to an audio file in blocks."""
+    ext = os.path.splitext(path)[1].lower()
+    total = int(duration * sr)
+    r = Renderer(p, sr, cfg["amplitude"], cfg["noise"], cfg["noise_lvl"], total, nch)
+    with sf.SoundFile(path, "w", samplerate=sr, channels=r.nch, subtype=EXPORT_FORMATS.get(ext)) as f:
+        last = -1
+        while (blk := r.next_block(1 << 16)) is not None:
+            f.write(blk)
+            pct = int(r.pos * 100 / total)
+            if pct != last:
+                sys.stdout.write(f"\r  Rendering... {pct:3d}%")
                 sys.stdout.flush()
-        threading.Thread(target=_pretask_alert, daemon=True).start()
-
-    ch = nch if p["mode"]=="surround" else 2
-    with sd.OutputStream(samplerate=sr, channels=ch,
-                         blocksize=BLOCK_SIZE, dtype=DTYPE, callback=make_cb(q)):
-        if total:
-            sd.sleep(int(duration*1000)); local.set()
-        else:
-            stop_event.wait()
-    thr.join(timeout=2)
-    if total:
-        stop_event.set()
+                last = pct
+    print(f"\n  Written: {path}  ({fmt(duration)}, {sr} Hz, {r.nch} ch)")
 
 # ---------------------------------------------------------------------------
 #  EMBED MODE
 # ---------------------------------------------------------------------------
 
+def embed_file(inp, out, beat, depth):
+    """Apply amplitude modulation at `beat` Hz to an audio file.  Gain swings
+    between 1 - depth and 1, so the result never clips where the input did not.
+    Keeps the input's sample format when the output container allows it."""
+    with sf.SoundFile(inp) as fin:
+        sr = fin.samplerate
+        fmt_out = os.path.splitext(out)[1].lstrip(".").upper() or fin.format
+        subtype = fin.subtype if sf.check_format(fmt_out, fin.subtype) else None
+        with sf.SoundFile(out, "w", samplerate=sr, channels=fin.channels,
+                          format=fmt_out, subtype=subtype) as fout:
+            pos = 0
+            for blk in fin.blocks(blocksize=1 << 16, always_2d=True, dtype="float64"):
+                t = (np.arange(len(blk)) + pos) / sr
+                g = 1.0 - depth * 0.5 * (1.0 - np.cos(2 * np.pi * beat * t))
+                fout.write(blk * g[:, None])
+                pos += len(blk)
+    return sr, pos
+
+
 def run_embed():
-    W = 64
     print()
-    print("="*W)
-    print("  Embed Mode -- AM-modulate an existing WAV file")
-    print("="*W)
+    rule("=")
+    print("  Embed Mode -- amplitude-modulate an existing recording")
+    rule("=")
     print()
-    print("  Loads a WAV file and applies amplitude modulation at the")
-    print("  chosen beat frequency.  The output file is indistinguishable")
-    print("  from the source on casual listening while carrying the AM")
-    print("  envelope in its waveform amplitude.")
+    print("  Applies a periodic volume change at the chosen rate to an audio")
+    print("  file (WAV, FLAC, OGG, AIFF).  At the default 15% depth it is heard")
+    print("  as a gentle tremolo on sustained sounds.  It is not inaudible.")
     print()
-    print("  Source: Aquino MindWar 'insertion into electronic media' vector.")
+    print("  Evidence: no provided study tested modulated music.  Garcia-Argibay")
+    print("  (2018) found beats embedded in music were LESS effective than")
+    print("  unmasked beats (b = 0.40, p = .022).")
     print()
-    inp = input("  Input WAV path  : ").strip().strip('"')
+    inp = input("  Input file path  : ").strip().strip('"')
     if not os.path.isfile(inp):
         print("  Error: file not found."); return
-    out  = input("  Output WAV path : ").strip().strip('"')
-    while True:
-        try:
-            beat = float(input("  Beat frequency (Hz) : ").strip())
-            if beat > 0: break
-        except ValueError: pass
+    stem, ext = os.path.splitext(inp)
+    beat = ask_float("  Modulation rate (Hz) : ")
+    dflt = f"{stem}_am{beat:g}Hz{ext}"
+    out = input(f"  Output file path [{dflt}] : ").strip().strip('"') or dflt
+    if os.path.abspath(out) == os.path.abspath(inp):
+        print("  Error: output must differ from input."); return
     val = input("  Modulation depth 0.0-1.0  [0.15 = subtle / 1.0 = full] : ").strip()
-    try:    depth = max(0.0, min(1.0, float(val) if val else 0.15))
-    except: depth = 0.15
-
     try:
-        from scipy.io import wavfile
-
-        sr, data = wavfile.read(inp)
-        orig = data.dtype
-        if np.issubdtype(orig, np.integer):
-            data = data.astype(np.float32) / np.iinfo(orig).max
-        else:
-            data = data.astype(np.float32)
-
-        t   = np.arange(data.shape[0], dtype=np.float64) / sr
-        env = 1.0 + depth * np.sin(2*np.pi*beat*t)
-        mod = np.clip(data * (env[:,np.newaxis] if data.ndim>1 else env), -1.0, 1.0).astype(np.float32)
-        wavfile.write(out, sr, mod)
-
-        print()
-        print(f"  Written to      : {out}")
-        print(f"  Sample rate     : {sr} Hz")
-        print(f"  Duration        : {data.shape[0]/sr:.1f} s")
-        print(f"  Beat frequency  : {beat} Hz")
-        print(f"  Modulation depth: {depth*100:.0f}%")
+        depth = max(0.0, min(1.0, float(val) if val else 0.15))
+    except ValueError:
+        depth = 0.15
+    try:
+        sr, n = embed_file(inp, out, beat, depth)
     except Exception as e:
-        print(f"  Error processing WAV: {e}"); return
+        print(f"  Error processing audio: {e}"); return
+    print()
+    print(f"  Written to      : {out}")
+    print(f"  Sample rate     : {sr} Hz")
+    print(f"  Duration        : {n/sr:.1f} s")
+    print(f"  Modulation rate : {beat:g} Hz")
+    print(f"  Modulation depth: {depth*100:.0f}%  (gain {1-depth:.2f}-1.00, no clipping added)")
 
 # ---------------------------------------------------------------------------
-#  FREQUENCY DETECTION
+#  DETECT MODE
 # ---------------------------------------------------------------------------
-
-def detect_frequency(file_path, duration=60):
-    """
-    Detect the dominant frequency in an audio file.
-
-    Parameters:
-        file_path (str): Path to the audio file.
-        duration (int, optional): Duration in seconds to analyze. Defaults to 60.
-
-    Returns:
-        float: The dominant frequency in Hz.
-    """
-    try:
-        # Read audio file with soundfile (supports many formats)
-        audio_data, sample_rate = sf.read(file_path, always_2d=True)
-
-        # Extract the first channel if the audio is stereo
-        audio_data = audio_data[:, 0]
-
-        # Truncate or pad the audio to the desired duration
-        max_samples = int(sample_rate * duration)
-        audio_data = audio_data[:max_samples] if len(audio_data) > max_samples else np.pad(
-            audio_data, (0, max_samples - len(audio_data)), 'constant'
-        )
-
-        if len(audio_data) == 0:
-            raise ValueError("Audio file contains no data or is too short for analysis.")
-
-        # Perform FFT on the audio data
-        fft_result = np.fft.rfft(audio_data)
-        freqs = np.fft.rfftfreq(len(audio_data), 1.0 / sample_rate)
-
-        # Find the dominant frequency
-        dominant_freq = freqs[np.argmax(np.abs(fft_result))]
-        print(f"  The dominant frequency is {dominant_freq:.2f} Hz.")
-        return dominant_freq
-
-    except FileNotFoundError:
-        print("  Error: The specified audio file was not found.")
-    except ValueError as e:
-        print(f"  Error: {e}")
-    except RuntimeError as e:
-        print(f"  Error: {e}")
-    except Exception as e:
-        print(f"  An unexpected error occurred: {e}")
-
 
 def run_detect():
-    W = 64
     print()
-    print("="*W)
-    print("  Detect Frequency -- find the dominant frequency in an audio file")
-    print("="*W)
+    rule("=")
+    print("  Analyse Audio -- tones, binaural offset and modulation rate")
+    rule("=")
     print()
-    print("  Reads an audio file and reports its dominant frequency via FFT")
-    print("  analysis of the first channel, over up to the first N seconds.")
+    print("  Reports the strongest tones in each channel, the left/right")
+    print("  frequency offset (binaural beat) and any amplitude-modulation")
+    print("  rhythm (monaural beats, isochronic pulses).  Use it to check")
+    print("  what a downloaded 'brainwave' track actually contains.")
     print()
     inp = input("  Audio file path : ").strip().strip('"')
     if not os.path.isfile(inp):
         print("  Error: file not found."); return
-    v = input("  Seconds to analyze [60]: ").strip()
-    try:    dur = int(v) if v else 60
-    except: dur = 60
+    v = input("  Seconds to analyse [60]: ").strip()
+    try:
+        dur = float(v) if v else 60.0
+    except ValueError:
+        dur = 60.0
     print()
     detect_frequency(inp, dur)
 
@@ -1291,74 +1564,211 @@ def run_detect():
 
 W = 64
 
+
 def rule(c=""):
     print(c * W)
 
-def banner():
-    print()
 
-def ask_int(prompt, lo, hi):
-    while True:
-        try:
-            v = int(input(prompt).strip())
-            if lo <= v <= hi: return v
-        except ValueError: pass
+def print_wrapped(tag, text):
+    print(textwrap.fill(text, width=W + 8, initial_indent="  " + tag,
+                        subsequent_indent="  " + " " * len(tag)))
 
-def ask_float(prompt):
+
+def ask_int(prompt, lo, hi, default=None):
     while True:
+        v = input(prompt).strip()
+        if not v and default is not None:
+            return default
         try:
-            v = float(input(prompt).strip())
-            if v > 0: return v
-        except ValueError: pass
+            v = int(v)
+            if lo <= v <= hi:
+                return v
+        except ValueError:
+            pass
+
+
+def ask_float(prompt, default=None, lo=0.0):
+    while True:
+        v = input(prompt).strip()
+        if not v and default is not None:
+            return default
+        try:
+            v = float(v)
+            if v > lo:
+                return v
+        except ValueError:
+            pass
+
+
+def ask_hms(prompt, default_s=None):
+    """Accept minutes ('17', '2.5') or [HH:]MM:SS.  Returns seconds."""
+    hint = f" [{fmt(default_s)}]" if default_s else ""
+    while True:
+        v = input(f"{prompt} (minutes or HH:MM:SS){hint}: ").strip()
+        if not v and default_s:
+            return float(default_s)
+        try:
+            if ":" in v:
+                parts = [float(x) for x in v.split(":")]
+                if len(parts) > 3 or any(x < 0 for x in parts):
+                    raise ValueError
+                s = 0.0
+                for x in parts:
+                    s = s * 60 + x
+            else:
+                s = float(v) * 60
+            if s >= 0:
+                return s
+        except ValueError:
+            pass
+
 
 def choose_amplitude():
-    global _amplitude
     print()
     rule("-")
     print("  Volume / amplitude  (0.1 = very quiet, 0.8 = default, 1.0 = full)")
     rule("-")
     print()
-    print("  Recommended: 0.6-0.8.  Higher levels may cause listener fatigue.")
-    print("  Garcia-Argibay (2018): carrier tone volume is not a significant")
-    print("  moderator of binaural beat efficacy.")
-    v = input(f"\n  Amplitude [0.8]: ").strip()
+    print("  Set your system volume so the tone is comfortable and clearly")
+    print("  audible, not loud (Engelbregt 2021: 'a comfortable level').")
+    print("  Prolonged loud listening damages hearing.")
+    v = input("\n  Amplitude [0.8]: ").strip()
     try:
-        val = float(v) if v else 0.8
-        _amplitude = max(0.05, min(1.0, val))
+        amp = max(0.05, min(1.0, float(v) if v else 0.8))
     except ValueError:
-        _amplitude = 0.8
-    print(f"  Amplitude set to {_amplitude:.2f}")
+        amp = 0.8
+    print(f"  Amplitude set to {amp:.2f}")
+    return amp
 
-def choose_pink_noise():
-    global _pink_lvl
+
+def choose_noise(p):
     print()
     rule("-")
-    print("  Pink noise masking (optional)")
+    print("  Masking noise (optional)")
     rule("-")
     print()
-    print("  Garcia-Argibay et al. (2018) meta-regression: binaural beats masked")
-    print("  with pink or white noise show similar efficacy to unmasked beats.")
-    print("  Chaieb et al. (2015): pink noise may amplify the binaural beat")
-    print("  percept (Oster 1973).  Pink noise can also reduce tinnitus.")
+    used = {"pink": "pink noise", "white": "white noise"}.get(p["noise"])
+    if p.get("ref_src"):
+        print(f"  The cited study ({p['ref_src']}) used: {used or 'no masking noise'}.")
+    print("  Garcia-Argibay (2018): noise-masked beats were not significantly")
+    print("  less effective than unmasked ones (music masking was).")
+    print("  Ingendoh (2023): no EEG study that embedded beats in pink noise")
+    print("  found entrainment.")
     print()
-    print("  0  None  (pure beat tone — default)")
-    print("  1  Subtle  (10% pink noise blend)")
-    print("  2  Moderate  (25% pink noise blend)")
-    print("  3  Heavy  (50% pink noise blend — beat remains audible)")
-    print("  4  Custom  (enter exact level 0.0-1.0)")
+    opts = [(None, 0.0), ("pink", 0.10), ("pink", 0.25), ("white", 0.10), ("white", 0.25)]
+    print("  0  None")
+    print("  1  Pink noise, subtle (10%)")
+    print("  2  Pink noise, moderate (25%)")
+    print("  3  White noise, subtle (10%)")
+    print("  4  White noise, moderate (25%)")
+    print("  5  Custom")
+    dflt = 0
+    if p["noise"]:
+        dflt = opts.index((p["noise"], p["noise_lvl"])) if (p["noise"], p["noise_lvl"]) in opts else 2
+    c = ask_int(f"\n  Enter number (0-5) [{dflt}]: ", 0, 5, dflt)
+    if c < 5:
+        kind, lvl = opts[c]
+    else:
+        kind = "white" if input("  Type (pink/white) [pink]: ").strip().lower().startswith("w") else "pink"
+        try:
+            lvl = max(0.0, min(1.0, float(input("  Level 0.0-1.0: ").strip())))
+        except ValueError:
+            lvl = DEFAULT_NOISE_LVL
+    if kind and lvl > 0:
+        print(f"  {kind.capitalize()} noise blend: {lvl*100:.0f}%")
+        return kind, lvl
+    print("  No masking noise.")
+    return None, 0.0
+
+
+def choose_output():
     print()
-    c = ask_int("  Enter number (0-4): ", 0, 4)
-    levels = {0: 0.0, 1: 0.10, 2: 0.25, 3: 0.50}
-    if c in levels:
-        _pink_lvl = levels[c]
-    else:
-        v = input("  Pink noise level (0.0-1.0): ").strip()
-        try:    _pink_lvl = max(0.0, min(1.0, float(v)))
-        except: _pink_lvl = 0.0
-    if _pink_lvl > 0:
-        print(f"  Pink noise blend: {_pink_lvl*100:.0f}%")
-    else:
-        print("  No pink noise masking.")
+    rule("-")
+    print("  Output")
+    rule("-")
+    print()
+    print("  1  Play now through the default audio device")
+    print("  2  Export to an audio file (WAV / FLAC / OGG)")
+    return ask_int("\n  Enter number (1-2) [1]: ", 1, 2, 1)
+
+
+def choose_duration(p, export=False):
+    ref, timing = p.get("ref_s"), p.get("timing", "during")
+    print()
+    rule("-")
+    print("  Session duration")
+    rule("-")
+    print()
+    if ref:
+        print(f"  Exposure used in the cited study: {fmt(ref)}  ({p['ref_src']})")
+        print("  Garcia-Argibay (2018): longer exposure gave larger effects.")
+        print()
+    opts = [] if export else [("Continuous  (Ctrl+C to stop)", "cont")]
+    opts.append(("Timed session", "timed"))
+    if timing == "before_and_during":
+        opts.append(("Pre-task induction, then keep playing during the task", "both"))
+    elif timing == "before":
+        opts.append(("Pre-task induction: play, then alert and stop", "before"))
+    for i, (txt, _) in enumerate(opts, 1):
+        print(f"  {i}  {txt}")
+    if timing in ("before", "before_and_during"):
+        print("     Garcia-Argibay (2018): exposure before, or before and during,")
+        print("     the task gave larger effects than exposure during it only.")
+    kind = opts[ask_int(f"\n  Enter number (1-{len(opts)}): ", 1, len(opts)) - 1][1]
+
+    print()
+    if kind == "cont":
+        return 0.0, 0.0
+    if kind == "before":
+        s = ask_hms("  Induction length", ref)
+        return (s, s) if s > 0 else (0.0, 0.0)
+    pretask = 0.0
+    if kind == "both":
+        pretask = ask_hms("  Induction before the task", p.get("pre_s") or ref)
+    total = ask_hms("  Total session length (induction + task)",
+                    max(ref or 0, pretask + 600) if kind == "both" else ref)
+    if total <= 0:
+        if export:
+            print("  Export needs a length; using 10 minutes.")
+            return 600.0, 0.0
+        print("  Zero entered.  Switching to continuous.")
+        return 0.0, pretask
+    if pretask >= total:
+        print("  Induction is not shorter than the session; the alert will not fire.")
+    if ref and total < ref:
+        print(f"  Note: shorter than the {fmt(ref)} used in {p['ref_src']}.")
+    return float(total), pretask
+
+
+def choose_sr(p):
+    m = p["mode"]
+    if m == "parametric":
+        print()
+        rule("-")
+        print("  Sample rate  (parametric mode)")
+        rule("-")
+        print()
+        print("  The carriers are at 40,000 and 40,040 Hz, which needs at least")
+        print("  96 kHz.  Your interface's output filter must also pass 40 kHz.")
+        print()
+        print("  1  96000 Hz   (recommended)")
+        print("  2  192000 Hz")
+        return {1: 96000, 2: 192000}[ask_int("\n  Enter number (1-2) [1]: ", 1, 2, 1)]
+    if m == "hf_am":
+        print()
+        rule("-")
+        print("  Sample rate  (high-carrier AM)")
+        rule("-")
+        print()
+        print("  44.1 kHz can represent the carrier without aliasing, but many")
+        print("  DAC output filters attenuate content above ~18 kHz.  96 kHz moves")
+        print("  the carrier well inside the passband if the interface supports it.")
+        print()
+        print("  1  44100 Hz")
+        print("  2  96000 Hz   (recommended)")
+        return {1: 44100, 2: 96000}[ask_int("\n  Enter number (1-2) [2]: ", 1, 2, 2)]
+    return SR_DEFAULT
+
 
 def choose_suite():
     print()
@@ -1367,132 +1777,46 @@ def choose_suite():
     rule("=")
     print()
     print("  1  General Brainwave Suite")
-    print("       Standard EEG bands: delta, theta, Schumann resonance, alpha,")
-    print("       15 Hz caution, low beta, high beta, gamma.  All descriptions")
-    print("       reference peer-reviewed EEG literature.")
+    print("       Delta, theta, Schumann, alpha, beta and gamma presets, each")
+    print("       matched to the stimulus used in its cited study.")
     print()
     print("  2  Attention & Cognition Suite")
-    print("       Research-specific presets for attention, memory, and ADHD.")
-    print("       Engelbregt 2021  |  Malandrone 2022  |  Garcia-Argibay 2017")
-    print("       Colzato 2017  |  Kraus & Porubanová 2015")
+    print("       Study replications: Engelbregt 2021 | Malandrone 2022 |")
+    print("       Kraus & Porubanova 2015 | Garcia-Argibay 2017 | Colzato 2017")
     print()
-    print("  3  MindWar Suite  (Valley & Aquino 1980 / Aquino 2003)")
-    print("       Frequencies from Michael Aquino's MindWar operational BWR")
-    print("       framework.  Includes infrasonic and ELF variants.")
+    print("  3  MindWar / BWR Manual Suite")
+    print("       Frequencies from the BWR Manual's MindWar-derived framework,")
+    print("       each checked against the research literature.")
     print()
     print("  4  Alzheimer's / 40 Hz Suite")
-    print("       MIT Picower GENUS protocols targeting 40 Hz gamma for")
-    print("       amyloid reduction and cognitive preservation.")
+    print("       MIT GENUS click train, 40 Hz monaural / binaural / isochronic.")
     print()
     print("  5  Manual Configuration")
-    print("       Specify mode, frequency, carrier and duration directly.")
+    print("       Specify mode, frequencies and duration directly.")
     print()
     print("  6  Embed Mode")
-    print("       AM-modulate an existing WAV file at a target beat frequency.")
+    print("       Amplitude-modulate an existing recording.")
     print()
-    print("  7  Detect Frequency")
-    print("       Analyze an existing audio file and report its dominant")
-    print("       frequency via FFT.")
+    print("  7  Analyse Audio")
+    print("       Measure tones, binaural offset and modulation in a file.")
     print()
     return ask_int("  Enter number (1-7): ", 1, 7)
+
 
 def choose_preset(suite, title):
     print()
     rule("=")
     print(f"  {title}")
     rule("=")
-    for i,p in enumerate(suite,1):
+    for i, p in enumerate(suite, 1):
         print()
         print(f"  {i}  {p['label']}")
-        for line in p['desc'].splitlines():
+        for line in p["desc"].splitlines():
             print(f"  {line}")
     print()
     rule("-")
-    return suite[ask_int(f"  Enter number (1-{len(suite)}): ", 1, len(suite))-1]
+    return suite[ask_int(f"  Enter number (1-{len(suite)}): ", 1, len(suite)) - 1]
 
-def choose_duration(p):
-    min_s  = MIN.get(p["band"], 0)
-    timing = p.get("timing", "during")
-    print()
-    rule("-")
-    print("  Session duration")
-    rule("-")
-    print()
-    if min_s > 0:
-        print(f"  Research-recommended minimum for this frequency band: {fmt(min_s)}")
-        print()
-    print("  1  Continuous  (press Ctrl+C to stop)")
-    print("  2  Timed session")
-    if timing in ("before", "before_and_during"):
-        print("  3  Pre-task induction  (play N min, alert to begin task, then continue)")
-        print(f"       Recommended: Garcia-Argibay (2018) found 'before' and")
-        print(f"       'before+during' exposure yields larger effects than during-only.")
-        hi = 3
-    else:
-        hi = 2
-    c = ask_int(f"\n  Enter number (1-{hi}): ", 1, hi)
-
-    pretask = 0.0
-    if c == 1:
-        return 0.0, pretask
-    if c == 3:
-        print()
-        print("  Enter pre-task induction duration:")
-        h = m = s = 0
-        try:
-            h = int(input("  Hours   : ").strip() or 0)
-            m = int(input("  Minutes : ").strip() or 0)
-            s = int(input("  Seconds : ").strip() or 0)
-        except ValueError: pass
-        pretask = float(h*3600 + m*60 + s)
-        if pretask <= 0: pretask = 0.0
-        print()
-        print("  Now enter total session duration (induction + task):")
-
-    h = m = s = 0
-    try:
-        h = int(input("  Hours   : ").strip() or 0)
-        m = int(input("  Minutes : ").strip() or 0)
-        s = int(input("  Seconds : ").strip() or 0)
-    except ValueError: pass
-    total = h*3600 + m*60 + s
-    if total <= 0:
-        print("  Zero entered.  Switching to continuous.")
-        return 0.0, pretask
-    if min_s > 0 and total < min_s:
-        print()
-        print(f"  Note: {fmt(total)} is below the research-recommended minimum")
-        print(f"  of {fmt(min_s)}.  Entrainment may not be achieved.")
-    return float(total), pretask
-
-def choose_sr(p):
-    if p["mode"] == "parametric":
-        print()
-        rule("-")
-        print("  Sample rate  (parametric mode requires high sample rate)")
-        rule("-")
-        print()
-        print("  Parametric mode generates ultrasonic carriers at 40,000 Hz")
-        print("  and 40,040 Hz.  A sample rate of at least 96,000 Hz is needed")
-        print("  to represent these frequencies without aliasing.")
-        print()
-        print("  1  96000 Hz   (recommended)")
-        print("  2  192000 Hz  (use if your interface supports it)")
-        return {1:96000, 2:192000}[ask_int("\n  Enter number (1-2): ", 1, 2)]
-    if p["mode"] == "subliminal":
-        print()
-        rule("-")
-        print("  Sample rate  (subliminal mode works best at 96000 Hz)")
-        rule("-")
-        print()
-        print("  The subliminal carrier is at 18,500 Hz.  At a 44,100 Hz")
-        print("  sample rate this sits close to the Nyquist limit and may")
-        print("  alias.  96,000 Hz gives a clean carrier.")
-        print()
-        print("  1  44100 Hz   (standard, acceptable)")
-        print("  2  96000 Hz   (recommended)")
-        return {1:44100, 2:96000}[ask_int("\n  Enter number (1-2): ", 1, 2)]
-    return SR_DEFAULT
 
 def manual_config():
     print()
@@ -1500,164 +1824,288 @@ def manual_config():
     print("  Manual Configuration")
     rule("=")
     print()
-    print("  Delivery modes")
+    names = list(MODES)
+    for i, m in enumerate(names, 1):
+        print(f"  {i}  {m:<11} -- {MODES[m]}")
     print()
-    print("  1  binaural     — two carriers, one per ear; headphones required")
-    print("  2  isochronic   — AM-modulated carrier; speakers or headphones")
-    print("  3  mono         — direct sine wave; no entrainment mechanism")
-    print("  4  infrasonic   — sub-20 Hz pressure wave; subwoofer required")
-    print("  5  subliminal   — near-threshold carrier; 96 kHz SR recommended")
-    print("  6  parametric   — ultrasonic carriers; 96 kHz + specialist transducer")
-    print("  7  surround     — isochronic to all output channels")
-    print()
-    modes = ["binaural","isochronic","mono","infrasonic","subliminal","parametric","surround"]
-    c    = ask_int("  Enter number (1-7): ", 1, 7)
-    mode = modes[c-1]
+    mode = names[ask_int(f"  Enter number (1-{len(names)}): ", 1, len(names)) - 1]
 
+    p = preset(mode=mode, carrier_hz=0.0, beat_hz=0.0, evidence="N/A")
     if mode == "mono":
-        hz = ask_float("  Frequency (Hz): ")
-        return dict(mode="mono", carrier_hz=hz, beat_hz=0.0, duty=0.5,
-                    band="other", label=f"Mono {hz} Hz", desc="",
-                    detail="Direct sine wave.", evidence="N/A", timing="during")
-
-    beat = ask_float("  Beat frequency (Hz): ")
-
-    if mode == "infrasonic":
-        carrier = beat
-    elif mode == "subliminal":
-        v = input(f"  Carrier Hz [{SUBLIMINAL_CARRIER}]: ").strip()
-        try:    carrier = float(v) if v else SUBLIMINAL_CARRIER
-        except: carrier = SUBLIMINAL_CARRIER
-    elif mode == "parametric":
-        carrier = PARAMETRIC_BASE
+        p["carrier_hz"] = ask_float("  Frequency (Hz): ")
+        p["label"] = f"Manual mono {p['carrier_hz']:g} Hz"
+    elif mode == "infrasonic":
+        p["beat_hz"] = p["carrier_hz"] = ask_float("  Frequency (Hz, below 20): ")
+        p["label"] = f"Manual infrasonic {p['beat_hz']:g} Hz"
     else:
-        v = input(f"  Carrier Hz [{CARRIER_OPTIMAL}]: ").strip()
-        try:    carrier = float(v) if v else CARRIER_OPTIMAL
-        except: carrier = CARRIER_OPTIMAL
+        p["beat_hz"] = ask_float("  Beat / modulation frequency (Hz): ")
+        default_c = {"hf_am": SUBLIMINAL_CARRIER, "parametric": PARAMETRIC_BASE}.get(mode, CARRIER_OPTIMAL)
+        if mode == "parametric":
+            p["carrier_hz"] = default_c
+        else:
+            label = "Lower tone (Hz)" if mode in ("binaural", "monaural") else "Carrier (Hz)"
+            p["carrier_hz"] = ask_float(f"  {label} [{default_c:g}]: ", default_c)
+        if mode in ("isochronic", "surround"):
+            d = input("  Duty cycle 0.0-1.0 [0.5]: ").strip()
+            try:
+                p["duty"] = float(d) if d else 0.5
+            except ValueError:
+                p["duty"] = 0.5
+        p["label"] = f"Manual {mode} {p['beat_hz']:g} Hz"
 
-    duty = 0.5
-    if mode in ("isochronic","surround"):
-        v = input("  Duty cycle 0.0-1.0 [0.5]: ").strip()
-        try: duty = float(v) if v else 0.5
-        except: pass
+    sr = choose_sr(p)
+    errors, warns = check_params(p, sr)
+    for w in warns:
+        print()
+        print_wrapped("Warning: ", w)
+    if errors:
+        for e in errors:
+            print()
+            print_wrapped("Error: ", e)
+        print("\n  Please re-enter the configuration.")
+        return manual_config()
+    p["sr"] = sr
+    return p
 
-    return dict(mode=mode, carrier_hz=carrier, beat_hz=beat, duty=duty,
-                band="other", label=f"Manual {mode} {beat} Hz",
-                desc="", detail="", evidence="N/A", timing="during")
 
-def print_session_header(p, duration, sr, pretask):
+def print_session_header(p, cfg, duration, sr, pretask):
+    m, c, b = p["mode"], p["carrier_hz"], p["beat_hz"]
     print()
     rule("=")
     print(f"  {p['label']}")
     rule("=")
-    print()
-    for line in p.get("detail","").splitlines():
-        print(f"  {line}")
+    if p.get("detail"):
+        print()
+        for line in p["detail"].splitlines():
+            print(f"  {line}")
     print()
     rule("-")
-    print(f"  Mode         : {p['mode']}")
-    print(f"  Beat target  : {p['beat_hz']} Hz")
-    if p["mode"] not in ("infrasonic",):
-        print(f"  Carrier      : {p['carrier_hz']} Hz")
-    if p["mode"] in ("isochronic","surround"):
-        print(f"  Duty cycle   : {p['duty']}")
+    print(f"  Mode         : {m}")
+    if m == "binaural":
+        print(f"  Tones        : left {c:g} Hz / right {c+b:g} Hz  ->  {b:g} Hz beat")
+    elif m in ("monaural", "parametric"):
+        print(f"  Tones        : {c:g} + {c+b:g} Hz in both channels  ->  {b:g} Hz beat")
+    elif m in ("isochronic", "surround"):
+        d = duty_of(p)
+        print(f"  Carrier      : {c:g} Hz, pulsed at {b:g} Hz")
+        print(f"  Pulse        : {d/b*1000:.2f} ms on ({d*100:.0f}% duty), "
+              f"{_pulse_ramp(b, d)*1000:.2f} ms raised-cosine edges")
+    elif m == "hf_am":
+        print(f"  Carrier      : {c:g} Hz, amplitude-modulated at {b:g} Hz")
+    elif m == "infrasonic":
+        print(f"  Frequency    : {b:g} Hz")
+    else:
+        print(f"  Frequency    : {c:g} Hz")
     print(f"  Sample rate  : {sr} Hz")
-    print(f"  Fade         : {FADE_S} s in / {FADE_S} s out")
-    print(f"  Volume       : {_amplitude:.2f}")
-    if _pink_lvl > 0:
-        print(f"  Pink noise   : {_pink_lvl*100:.0f}% blend")
+    print(f"  Fade         : {FADE_S:g} s in / {FADE_S:g} s out ({STOP_FADE_S:g} s on Ctrl+C)")
+    print(f"  Volume       : {cfg['amplitude']:.2f}")
+    if cfg["noise"]:
+        print(f"  Noise        : {cfg['noise']} noise, {cfg['noise_lvl']*100:.0f}% blend")
     if pretask > 0:
         print(f"  Pre-task     : {fmt(pretask)} induction, then task-begin alert")
-    if duration:
-        print(f"  Duration     : {fmt(int(duration))}")
-    else:
-        print(f"  Duration     : Continuous  (Ctrl+C to stop)")
-    min_s = MIN.get(p["band"],0)
-    if min_s > 0:
-        print(f"  Min session  : {fmt(min_s)}")
-    ev = p.get("evidence","")
-    if ev:
-        print(f"  Evidence     : {ev}")
-    timing = p.get("timing","during")
+    print(f"  Duration     : {fmt(duration) if duration else 'Continuous  (Ctrl+C to stop)'}")
+    if p.get("ref_s"):
+        print(f"  Studied dose : {fmt(p['ref_s'])}  ({p['ref_src']})")
+    if p.get("evidence"):
+        print(f"  Evidence     : {p['evidence']}")
     timing_labels = {
-        "during":           "concurrent with task",
-        "before":           "induction before task",
-        "before_and_during":"before + during task (recommended by Garcia-Argibay 2018)",
+        "during":            "during the task / activity",
+        "before":            "before the task (induction)",
+        "before_and_during": "before and during the task",
     }
-    print(f"  Timing       : {timing_labels.get(timing, timing)}")
+    print(f"  Timing       : {timing_labels.get(p['timing'], p['timing'])} (as in the cited study)")
     rule("-")
     print()
-    m = p["mode"]
     if m == "binaural":
-        print("  Headphones required.  Binaural does not work on speakers.")
+        print("  Headphones required: each ear must hear only its own tone.")
     elif m == "infrasonic":
-        print("  Sub-20 Hz capable subwoofer required.")
-        print("  Sit or lie in the room -- coupling is through skin and bone.")
-    elif m == "subliminal":
-        print("  Can be played in the background.  Subject may hear nothing.")
+        print("  Needs a subwoofer that reaches below 20 Hz.  Keep the level low.")
+    elif m == "hf_am":
+        print("  Most adults hear little or nothing; younger listeners hear a")
+        print("  high-pitched flutter.  Only play it for people who agreed to listen.")
     elif m == "parametric":
-        print("  96 kHz interface and transducer passing above 40 kHz required.")
+        print("  Needs a 96 kHz+ interface and a parametric (ultrasonic) speaker array.")
     elif m == "surround":
-        print("  Signal will fill all available output channels.")
-        print("  All persons in the room will be exposed.")
+        print("  Plays on every output channel.  Everyone in the room will hear it,")
+        print("  so only use it with people who have agreed to listen.")
     else:
-        print("  Quiet room recommended.  Eyes closed, passive listening.")
-        print("  Do not mix with background music -- this reduces efficacy.")
-        print("  Pink noise masking is acceptable (Garcia-Argibay 2018).")
+        print("  Speakers or headphones.  Passive listening in a quiet room unless")
+        print("  the study played it during a task.")
 
-def signal_handler(sig, frame):
-    e = time.time()-_t0_wall if _t0_wall else 0
-    print(f"\n\n  Stopped.  Session time: {fmt(e)}")
-    stop_event.set()
+
+def run_tone_session(p):
+    cfg = dict(amplitude=choose_amplitude())
+    cfg["noise"], cfg["noise_lvl"] = choose_noise(p)
+    out = choose_output()
+    duration, pretask = choose_duration(p, export=(out == 2))
+    sr = p.get("sr") or choose_sr(p)
+    errors, _ = check_params(p, sr)     # preset texts already explain the warnings
+    if errors:
+        for e in errors:
+            print_wrapped("Error: ", e)
+        return
+    print_session_header(p, cfg, duration, sr, 0.0 if out == 2 else pretask)
+
+    if out == 2:
+        nch = 2
+        if p["mode"] == "surround":
+            nch = ask_int("  Channels to write (2-16) [6]: ", 2, 16, 6)
+        name = "_".join("".join(ch if ch.isalnum() or ch == "." else " "
+                                for ch in p["label"].split("--")[0]).split())
+        length = f"{round(duration / 60)}min" if duration >= 60 else f"{round(duration)}s"
+        dflt = f"{name}_{length}.flac"
+        path = input(f"\n  Output file [{dflt}]: ").strip().strip('"') or dflt
+        if os.path.splitext(path)[1].lower() not in EXPORT_FORMATS:
+            path += ".flac"
+        try:
+            export_session(p, cfg, duration, sr, path, nch)
+        except Exception as e:
+            print(f"\n  Error writing {path}: {e}")
+        return
+
+    input("\n  Press Enter to begin.  Ctrl+C to stop.\n")
+    try:
+        elapsed = play_session(p, cfg, duration, sr, pretask)
+    except Exception as e:
+        print(f"\n  Playback error: {e}")
+        return
+    if elapsed is None:
+        return
+    print(f"  Session complete.  Total time: {fmt(elapsed)}")
+    ref = p.get("ref_s")
+    if ref:
+        if elapsed >= ref:
+            print(f"  Matched the {fmt(ref)} exposure used in {p['ref_src']}.")
+        else:
+            print(f"  {fmt(ref - elapsed)} shorter than the {fmt(ref)} exposure used in {p['ref_src']}.")
+    print()
+
+# ---------------------------------------------------------------------------
+#  SELF-TEST
+# ---------------------------------------------------------------------------
+
+def _max_step_bound(p, sr, amp):
+    """Largest sample-to-sample step a click-free rendering can contain."""
+    f_top = signal_top_hz(p)
+    bound = 2 * math.sin(min(math.pi * f_top / sr, math.pi / 2))
+    if p["mode"] in ("isochronic", "surround"):
+        bound += math.pi / (2 * _pulse_ramp(p["beat_hz"], duty_of(p)) * sr)
+    return amp * bound
+
+
+def run_selftest():
+    """Render every preset, then verify frequencies, smoothness and seam-free
+    block processing with the analyser.  Returns True if all checks pass."""
+    amp, secs, fails = 0.8, 8.0, 0
+    print("\nSelf-test: rendering every preset and analysing the result\n")
+    for title, suite in SUITES:
+        print(f"  {title}")
+        for p in suite:
+            sr = 96000 if p["mode"] in ("parametric", "hf_am") else SR_DEFAULT
+            m, c, b = p["mode"], p["carrier_hz"], p["beat_hz"]
+            problems = []
+            x = render(p, sr, secs, amplitude=amp, fade_s=0.0)
+            res = analyse(x.astype(np.float64), sr)
+            ch0 = res["channels"][0]
+            tol = lambda f: max(0.02, 1e-4 * f)
+            if m == "binaural":
+                fl = ch0["peaks"][0][0]
+                fr = res["channels"][1]["peaks"][0][0]
+                if abs(fl - c) > tol(c) or abs(fr - (c + b)) > tol(c + b):
+                    problems.append(f"tones {fl:.3f}/{fr:.3f} Hz, expected {c:g}/{c+b:g}")
+                if not res["binaural"] or abs(res["binaural"][2] - b) > 0.02:
+                    problems.append(f"binaural offset {res['binaural']}, expected {b:g}")
+                if ch0["mod"]:
+                    problems.append("unexpected amplitude modulation in a binaural channel")
+            elif m in ("monaural", "isochronic", "surround", "hf_am"):
+                if not ch0["mod"] or abs(ch0["mod"][0] - b) > tol(b):
+                    problems.append(f"modulation {ch0['mod']}, expected {b:g} Hz")
+            elif m == "parametric":
+                found = [f for f, _ in ch0["peaks"]]
+                if not all(any(abs(f - g) < tol(g) for f in found) for g in (c, c + b)):
+                    problems.append(f"peaks {found}, expected {c:g} and {c+b:g}")
+            else:
+                f0 = b if m == "infrasonic" else c
+                if abs(ch0["peaks"][0][0] - f0) > tol(f0):
+                    problems.append(f"peak {ch0['peaks'][0][0]:.3f} Hz, expected {f0:g}")
+
+            step = float(np.max(np.abs(np.diff(x, axis=0))))
+            bound = _max_step_bound(p, sr, amp)
+            if step > 1.05 * bound:
+                problems.append(f"discontinuity: step {step:.4f} > bound {bound:.4f}")
+
+            kw = dict(amplitude=amp, noise="pink", noise_lvl=0.25, seed=7)
+            a = render(p, sr, 2.0, block=BLOCK_SIZE, **kw)
+            z = render(p, sr, 2.0, block=997, **kw)
+            if a.shape != z.shape or np.max(np.abs(a - z)) > 1e-6:
+                problems.append("output depends on block size (seams between blocks)")
+
+            fails += bool(problems)
+            print(f"    {'PASS' if not problems else 'FAIL'}  {p['label']}")
+            for pr in problems:
+                print(f"          {pr}")
+
+    print("\n  Engine")
+    p = SUITE_GENERAL[0]
+    x = render(p, SR_DEFAULT, 3.0, amplitude=amp, fade_s=1.0)
+    ok = abs(x[0]).max() == 0 and abs(x[-1]).max() < 1e-3 and abs(x[len(x)//2]).max() > 0.1
+    r = Renderer(p, SR_DEFAULT, amp, fade_s=0.0)
+    r.next_block(); r.release()
+    rel = []
+    while (blk := r.next_block()) is not None:
+        rel.append(blk)
+    rel = np.concatenate(rel)
+    ok_rel = len(rel) == int(STOP_FADE_S * SR_DEFAULT) and abs(rel[-1]).max() < 1e-3
+    fails += (not ok) + (not ok_rel)
+    print(f"    {'PASS' if ok else 'FAIL'}  fade in / scheduled fade out")
+    print(f"    {'PASS' if ok_rel else 'FAIL'}  release fade after stop request")
+
+    with tempfile.TemporaryDirectory() as d:
+        src, dst = os.path.join(d, "in.wav"), os.path.join(d, "out.wav")
+        t = np.arange(SR_DEFAULT * 6) / SR_DEFAULT
+        sf.write(src, 0.9 * np.sin(2 * np.pi * 220 * t), SR_DEFAULT, subtype="PCM_16")
+        embed_file(src, dst, 10.0, 0.5)
+        y, _ = sf.read(dst, always_2d=True)
+        info = sf.info(dst)
+        mod = analyse(y, SR_DEFAULT)["channels"][0]["mod"]
+        ok = (mod is not None and abs(mod[0] - 10.0) < 0.05 and np.abs(y).max() <= 0.9 + 1e-3
+              and info.subtype == "PCM_16")
+        fails += not ok
+        print(f"    {'PASS' if ok else 'FAIL'}  embed mode (10 Hz AM, no clipping, format kept)")
+
+    print(f"\n  {'All checks passed.' if not fails else f'{fails} check(s) FAILED.'}\n")
+    return fails == 0
 
 # ---------------------------------------------------------------------------
 #  MAIN
 # ---------------------------------------------------------------------------
 
 def main():
-    global _t0_wall
-    signal.signal(signal.SIGINT, signal_handler)
-    banner()
+    ap = argparse.ArgumentParser(description="Brainwave tone generator and audio frequency analyser.")
+    ap.add_argument("--detect", metavar="FILE", help="analyse an audio file and exit")
+    ap.add_argument("--seconds", type=float, default=60.0, help="seconds to analyse with --detect")
+    ap.add_argument("--selftest", action="store_true", help="render and verify every preset")
+    args = ap.parse_args()
 
-    choice = choose_suite()
+    if args.selftest:
+        sys.exit(0 if run_selftest() else 1)
+    if args.detect:
+        sys.exit(0 if detect_frequency(args.detect, args.seconds) else 1)
 
-    if choice == 6:
-        run_embed(); return
-
-    if choice == 7:
-        run_detect(); return
-
-    if   choice == 1: p = choose_preset(SUITE_GENERAL,    "General Brainwave Suite")
-    elif choice == 2: p = choose_preset(SUITE_ATTENTION,  "Attention & Cognition Suite")
-    elif choice == 3: p = choose_preset(SUITE_MINDWAR,    "MindWar Suite  (Valley & Aquino 1980 / Aquino 2003)")
-    elif choice == 4: p = choose_preset(SUITE_ALZHEIMERS, "Alzheimer's / 40 Hz Suite")
-    else:             p = manual_config()
-
-    choose_amplitude()
-    choose_pink_noise()
-    duration, pretask = choose_duration(p)
-    sr                = choose_sr(p)
-    print_session_header(p, duration, sr, pretask)
-    input("  Press Enter to begin.  Ctrl+C to stop.\n")
-
-    t_start = time.time()
     try:
-        run_session(p, duration, sr, pretask)
-    except Exception as ex:
-        print(f"\n  Error: {ex}"); sys.exit(1)
-
-    elapsed = time.time() - t_start
-    min_s   = MIN.get(p["band"], 0)
-    met_min = elapsed >= min_s if min_s > 0 else True
-
-    print(f"  Session complete.  Total time: {fmt(elapsed)}")
-    if min_s > 0:
-        if met_min:
-            print(f"  Research minimum of {fmt(min_s)} was met.")
+        choice = choose_suite()
+        if choice == 6:
+            run_embed(); return
+        if choice == 7:
+            run_detect(); return
+        if choice == 5:
+            p = manual_config()
         else:
-            print(f"  Session ended {fmt(min_s-elapsed)} before the research")
-            print(f"  minimum of {fmt(min_s)}.  Entrainment may not have been achieved.")
-    print()
+            title, suite = SUITES[choice - 1]
+            p = choose_preset(suite, title)
+        run_tone_session(p)
+    except (KeyboardInterrupt, EOFError):
+        print("\n  Cancelled.")
 
 
 if __name__ == "__main__":
